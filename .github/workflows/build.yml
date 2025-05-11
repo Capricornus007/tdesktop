@@ -1,0 +1,48 @@
+name: Build 64Gram with Docker
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - dev
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker
+        run: |
+          docker --version
+
+      - name: Prepare dependencies
+        run: |
+          cd Telegram/build/prepare
+          ./linux.sh
+
+      - name: Build with Docker
+        run: |
+          docker run --rm -it \
+            -u $(id -u) \
+            -v "$PWD:/usr/src/tdesktop" \
+            tdesktop:centos_env \
+            /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+            -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
+            -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }}
+
+      - name: Check build output
+        run: ls -la out/Release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-build
+          path: out/Release/Telegram
