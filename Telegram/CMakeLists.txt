@@ -34,6 +34,7 @@ include(cmake/td_iv.cmake)
 include(cmake/td_lang.cmake)
 include(cmake/td_mtproto.cmake)
 include(cmake/td_scheme.cmake)
+include(cmake/td_tde2e.cmake)
 include(cmake/td_ui.cmake)
 include(cmake/generate_appdata_changelog.cmake)
 

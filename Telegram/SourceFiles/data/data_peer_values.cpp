@@ -227,11 +227,11 @@ inline auto DefaultRestrictionValue(
 			| ChatRestriction::SendVideoMessages);
 		auto allowedAny = PeerFlagsValue(
 			user,
-			(UserDataFlag::Deleted | UserDataFlag::MeRequiresPremiumToWrite)
+			(UserDataFlag::Deleted | UserDataFlag::RequiresPremiumToWrite)
 		) | rpl::map([=](UserDataFlags flags) {
 			return (flags & UserDataFlag::Deleted)
 				? rpl::single(false)
-				: !(flags & UserDataFlag::MeRequiresPremiumToWrite)
+				: !(flags & UserDataFlag::RequiresPremiumToWrite)
 				? rpl::single(true)
 				: AmPremiumValue(&user->session());
 		}) | rpl::flatten_latest();
@@ -602,7 +602,7 @@ rpl::producer<int> UniqueReactionsLimitValue(
 	) | rpl::map([config = &peer->session().appConfig()] {
 		return UniqueReactionsLimit(config);
 	}) | rpl::distinct_until_changed();
-	if (const auto channel = peer->asChannel()) {
+	if (peer->isChannel()) {
 		return rpl::combine(
 			PeerAllowedReactionsValue(peer),
 			std::move(configValue)
@@ -611,7 +611,7 @@ rpl::producer<int> UniqueReactionsLimitValue(
 				? allowedReactions.maxCount
 				: limit;
 		});
-	} else if (const auto chat = peer->asChat()) {
+	} else if (peer->isChat()) {
 		return rpl::combine(
 			PeerAllowedReactionsValue(peer),
 			std::move(configValue)

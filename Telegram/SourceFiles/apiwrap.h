@@ -166,7 +166,8 @@ public:
 	QString exportDirectMessageLink(
 		not_null<HistoryItem*> item,
 		bool inRepliesContext,
-		bool forceNonPublicLink = false);
+		bool forceNonPublicLink = false,
+		std::optional<TimeId> videoTimestamp = {});
 	QString exportDirectStoryLink(not_null<Data::Story*> item);
 
 	void exportMessageAsBase64(not_null<HistoryItem*> item, Fn<void(const QString&)> done, Fn<void()> fail);
@@ -201,7 +202,6 @@ public:
 	void requestChangelog(
 		const QString &sinceVersion,
 		Fn<void(const MTPUpdates &result)> callback);
-	void refreshTopPromotion();
 	void requestDeepLinkInfo(
 		const QString &path,
 		Fn<void(TextWithEntities message, bool updateRequired)> callback);
@@ -307,7 +307,7 @@ public:
 	void finishForwarding(const SendAction &action);
 	void forwardMessages(
 		Data::ResolvedForwardDraft &&draft,
-		const SendAction &action,
+		SendAction action,
 		FnMut<void()> &&successCallback = nullptr);
 	void shareContact(
 		const QString &phone,
@@ -369,7 +369,7 @@ public:
 	void sendInlineResult(
 		not_null<UserData*> bot,
 		not_null<InlineBots::Result*> data,
-		const SendAction &action,
+		SendAction action,
 		std::optional<MsgId> localMessageId,
 		Fn<void(bool)> done = nullptr);
 	void sendMessageFail(
@@ -570,9 +570,6 @@ private:
 		not_null<SendingAlbum*> album,
 		Fn<void(bool)> done = nullptr);
 
-	void getTopPromotionDelayed(TimeId now, TimeId next);
-	void topPromotionDone(const MTPhelp_PromoData &proxy);
-
 	void sendNotifySettingsUpdates();
 
 	template <typename Request>
@@ -709,11 +706,6 @@ private:
 
 	std::unique_ptr<TaskQueue> _fileLoader;
 	base::flat_map<uint64, std::shared_ptr<SendingAlbum>> _sendingAlbums;
-
-	mtpRequestId _topPromotionRequestId = 0;
-	std::pair<QString, uint32> _topPromotionKey;
-	TimeId _topPromotionNextRequestTime = TimeId(0);
-	base::Timer _topPromotionTimer;
 
 	base::flat_set<not_null<const Data::ForumTopic*>> _updateNotifyTopics;
 	base::flat_set<not_null<const PeerData*>> _updateNotifyPeers;

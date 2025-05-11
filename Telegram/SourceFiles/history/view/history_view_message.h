@@ -179,6 +179,7 @@ private:
 
 	bool updateBottomInfo();
 
+	void initPaidInformation();
 	void initLogEntryOriginal();
 	void initPsa();
 	void fromNameUpdated(int width) const;
@@ -275,6 +276,10 @@ private:
 	[[nodiscard]] int visibleMediaTextLength() const;
 	[[nodiscard]] bool needInfoDisplay() const;
 	[[nodiscard]] bool invertMedia() const;
+	[[nodiscard]] bool hasFastReply() const;
+	[[nodiscard]] bool hasFastForward() const;
+	[[nodiscard]] bool displayFastReply() const;
+	[[nodiscard]] bool displayFastForward() const;
 
 	[[nodiscard]] bool isPinnedContext() const;
 
@@ -302,7 +307,8 @@ private:
 
 	void refreshRightBadge();
 	void validateFromNameText(PeerData *from) const;
-	void validateForwardedNameText(HistoryItem *item) const;
+	void ensureFromNameStatusLink(not_null<PeerData*> peer) const;
+	void validateForwardedNameText(PeerData *from, const TextWithEntities &item);
 
 	mutable std::unique_ptr<RightAction> _rightAction;
 	mutable ClickHandlerPtr _fastReplyLink;
