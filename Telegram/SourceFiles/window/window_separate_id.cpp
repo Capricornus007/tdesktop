@@ -7,6 +7,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "window/window_separate_id.h"
 
+#include "core/application.h"
+#include "data/data_channel.h"
+#include "data/data_community.h"
 #include "data/data_folder.h"
 #include "data/data_peer.h"
 #include "data/data_saved_messages.h"
@@ -15,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "main/main_account.h"
 #include "main/main_session.h"
+#include "window/window_lock_widgets.h"
 
 namespace Window {
 
@@ -44,12 +48,13 @@ SeparateId::SeparateId(not_null<PeerData*> peer)
 : SeparateId(SeparateType::Chat, peer->owner().history(peer)) {
 }
 
-SeparateId::SeparateId(SeparateSharedMedia data)
+SeparateId::SeparateId(
+	not_null<Data::Thread*> thread,
+	Storage::SharedMediaType sharedMediaType)
 : type(SeparateType::SharedMedia)
-, sharedMedia(data.type)
-, account(&data.peer->session().account())
-, sharedMediaDataPeer(data.peer)
-, sharedMediaDataTopicRootId(data.topicRootId) {
+, sharedMediaType(sharedMediaType)
+, account(&thread->session().account())
+, thread(thread) {
 }
 
 bool SeparateId::primary() const {
@@ -71,27 +76,40 @@ Data::Folder *SeparateId::folder() const {
 }
 
 Data::SavedSublist *SeparateId::sublist() const {
-	return (type == SeparateType::SavedSublist)
-		? thread->owner().savedMessages().sublist(thread->peer()).get()
-		: nullptr;
+	return (type != SeparateType::SavedSublist)
+		? nullptr
+		: thread->asSublist();
+}
+
+Data::CommunityInfo *SeparateId::community() const {
+	if (type != SeparateType::Community || !thread) {
+		return nullptr;
+	}
+	const auto channel = thread->peer()->asChannel();
+	return channel ? channel->communityInfo() : nullptr;
 }
 
 bool SeparateId::hasChatsList() const {
 	return (type == SeparateType::Primary)
 		|| (type == SeparateType::Archive)
-		|| (type == SeparateType::Forum);
+		|| (type == SeparateType::Forum)
+		|| (type == SeparateType::Community);
 }
 
-PeerData *SeparateId::sharedMediaPeer() const {
-	return (type == SeparateType::SharedMedia)
-		? sharedMediaDataPeer
-		: nullptr;
+bool SeparateWindowThreadAvailable(SeparateId id) {
+	const auto thread = id.thread;
+	return !thread || thread->peer()->computeUnavailableReason().isEmpty();
 }
 
-MsgId SeparateId::sharedMediaTopicRootId() const {
-	return (type == SeparateType::SharedMedia)
-		? sharedMediaDataTopicRootId
-		: MsgId();
+bool SeparateWindowLocked(SeparateId id) {
+	const auto thread = id.thread;
+	return (thread != nullptr)
+		&& (Core::App().passcodeLocked()
+			|| thread->session().termsLocked().has_value());
+}
+
+bool CanShowSeparateWindow(SeparateId id) {
+	return SeparateWindowThreadAvailable(id) && !SeparateWindowLocked(id);
 }
 
 } // namespace Window

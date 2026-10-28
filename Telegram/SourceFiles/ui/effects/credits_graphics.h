@@ -21,6 +21,7 @@ class Session;
 
 namespace Ui::Text {
 class CustomEmoji;
+struct MarkedContext;
 } // namespace Ui::Text
 
 namespace Ui {
@@ -36,7 +37,7 @@ using PaintRoundImageCallback = Fn<void(
 	int outerWidth,
 	int size)>;
 
-[[nodiscard]] QImage GenerateStars(int height, int count);
+[[nodiscard]] QImage GenerateStars(int height, int count, int ratio = 0);
 
 [[nodiscard]] not_null<Ui::RpWidget*> CreateSingleStarWidget(
 	not_null<Ui::RpWidget*> parent,
@@ -44,7 +45,7 @@ using PaintRoundImageCallback = Fn<void(
 
 [[nodiscard]] not_null<Ui::MaskedInputField*> AddInputFieldForCredits(
 	not_null<Ui::VerticalLayout*> container,
-	rpl::producer<StarsAmount> value);
+	rpl::producer<CreditsAmount> value);
 
 PaintRoundImageCallback GenerateCreditsPaintUserpicCallback(
 	const Data::CreditsHistoryEntry &entry);
@@ -86,8 +87,12 @@ Fn<void(QPainter &)> PaintOutlinedColoredCreditsIconCallback(
 
 [[nodiscard]] QImage CreditsWhiteDoubledIcon(int size, float64 outlineRatio);
 
-std::unique_ptr<Ui::Text::CustomEmoji> MakeCreditsIconEmoji(
+[[nodiscard]] std::unique_ptr<Ui::Text::CustomEmoji> MakeCreditsIconEmoji(
 	int height,
 	int count);
+[[nodiscard]] Ui::Text::MarkedContext MakeCreditsIconContext(
+	int height,
+	int count);
+[[nodiscard]] TextWithEntities MakeCreditsIconEntity();
 
 } // namespace Ui

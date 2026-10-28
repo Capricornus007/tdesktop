@@ -9,6 +9,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "lang/lang_keys.h"
 #include "core/application.h"
+#include "core/update_channel.h"
+#include "core/version.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "storage/storage_domain.h"
@@ -51,13 +53,17 @@ Changelogs::Changelogs(not_null<Main::Session*> session, int oldVersion)
 	_session->data().chatsListChanges(
 	) | rpl::filter([](Data::Folder *folder) {
 		return !folder;
-	}) | rpl::start_with_next([=] {
+	}) | rpl::on_next([=] {
 		requestCloudLogs();
 	}, _chatsSubscription);
 }
 
 std::unique_ptr<Changelogs> Changelogs::Create(
 		not_null<Main::Session*> session) {
+	if (BuildIsCanary) {
+		// Canary changelogs live in the canary channels themselves.
+		return nullptr;
+	}
 	auto &local = Core::App().domain().local();
 	const auto oldVersion = local.oldVersion();
 	local.clearOldVersion();
@@ -137,7 +143,7 @@ void Changelogs::addBetaLog(int changeVersion, const char *changes) {
 	}
 	const auto text = [&] {
 		static const auto simple = u"\n- "_q;
-		static const auto separator = QString::fromUtf8("\n\xE2\x80\xA2 ");
+		static const auto separator = '\n' + Ui::kQBullet + ' ';
 		auto result = QString::fromUtf8(changes).trimmed();
 		if (result.startsWith(base::StringViewMid(simple, 1))) {
 			result = separator.mid(1) + result.mid(simple.size() - 1);

@@ -44,7 +44,7 @@ Then your language translation filename is `de.json` or something like that.
 
 ## Build instructions
 
-* Windows [(32-bit)][win32] [(64-bit)][win64]
+* [Windows (32-bit and 64-bit)][win]
 * [macOS][mac]
 * [GNU/Linux using Docker][linux]
 
@@ -53,15 +53,9 @@ Then your language translation filename is `de.json` or something like that.
 * [Official Telegram Channel](https://t.me/tg_x64)
 * [Official discussion group](https://t.me/tg_x64_chat)
 
-## Sponsors
-<a href="https://www.jetbrains.com/?from=64Gram">
-     <img src="https://www.jetbrains.com/icon-512.png"  alt="JetBrains" width="150"/>
-</a>
-
 [//]: # (LINKS)
 [license]: LICENSE
-[win32]: docs/building-win.md
-[win64]: docs/building-win-x64.md
+[win]: docs/building-win.md
 [mac]: docs/building-mac.md
 [linux]: docs/building-linux.md
 [preview_image]: https://github.com/TDesktop-x64/tdesktop/blob/dev/docs/assets/preview.png "Preview of 64Gram Desktop"

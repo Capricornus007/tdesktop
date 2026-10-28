@@ -67,10 +67,12 @@ struct SponsoredMessage {
 	QByteArray randomId;
 	SponsoredFrom from;
 	TextWithEntities textWithEntities;
-	History *history = nullptr;
+	not_null<History*> history;
 	QString link;
 	TextWithEntities sponsorInfo;
 	TextWithEntities additionalInfo;
+	crl::time durationMin = 0;
+	crl::time durationMax = 0;
 };
 
 struct SponsoredMessageDetails {
@@ -92,6 +94,23 @@ struct SponsoredReportAction {
 		Fn<void(Data::SponsoredReportResult)>)> callback;
 };
 
+struct SponsoredForVideoState {
+	int itemIndex = 0;
+	crl::time leftTillShow = 0;
+
+	[[nodiscard]] bool initial() const {
+		return !itemIndex && !leftTillShow;
+	}
+};
+
+struct SponsoredForVideo {
+	std::vector<SponsoredMessage> list;
+	crl::time startDelay = 0;
+	crl::time betweenDelay = 0;
+
+	SponsoredForVideoState state;
+};
+
 class SponsoredMessages final {
 public:
 	enum class AppendResult {
@@ -105,16 +124,29 @@ public:
 		InjectToMiddle,
 		AppendToTopBar,
 	};
+	struct InjectState {
+		HistoryItem *lastInjected = nullptr;
+		int postsBetween = 0;
+		bool injectedAny = false;
+	};
 	using Details = SponsoredMessageDetails;
 	using RandomId = QByteArray;
 	explicit SponsoredMessages(not_null<Main::Session*> session);
 	~SponsoredMessages();
 
 	[[nodiscard]] bool canHaveFor(not_null<History*> history) const;
+	[[nodiscard]] bool canHaveFor(not_null<HistoryItem*> item) const;
 	[[nodiscard]] bool isTopBarFor(not_null<History*> history) const;
 	void request(not_null<History*> history, Fn<void()> done);
+	void requestForVideo(
+		not_null<HistoryItem*> item,
+		Fn<void(SponsoredForVideo)> done);
+	void updateForVideo(
+		FullMsgId itemId,
+		SponsoredForVideoState state);
 	void clearItems(not_null<History*> history);
 	[[nodiscard]] Details lookupDetails(const FullMsgId &fullId) const;
+	[[nodiscard]] Details lookupDetails(const SponsoredMessage &data) const;
 	[[nodiscard]] Details lookupDetails(
 		const Api::SponsoredSearchResult &data) const;
 	void clicked(const FullMsgId &fullId, bool isMedia, bool isFullscreen);
@@ -133,11 +165,18 @@ public:
 		MsgId injectAfterMsgId,
 		int betweenHeight,
 		int fallbackWidth);
+	[[nodiscard]] std::optional<InjectState> injectState(
+		not_null<History*> history);
+	[[nodiscard]] HistoryItem *injectItem(
+		not_null<History*> history,
+		not_null<HistoryItem*> after);
 
 	void view(const FullMsgId &fullId);
 	void view(const QByteArray &randomId);
 
 	[[nodiscard]] State state(not_null<History*> history) const;
+
+	[[nodiscard]] bool hasUnshownFor(not_null<History*> history) const;
 
 	[[nodiscard]] SponsoredReportAction createReportCallback(
 		const FullMsgId &fullId);
@@ -166,7 +205,19 @@ private:
 		int postsBetween = 0;
 		State state = State::None;
 	};
+	struct ListForVideo {
+		std::vector<Entry> entries;
+		crl::time received = 0;
+		crl::time startDelay = 0;
+		crl::time betweenDelay = 0;
+		SponsoredForVideoState state;
+	};
 	struct Request {
+		mtpRequestId requestId = 0;
+		crl::time lastReceived = 0;
+	};
+	struct RequestForVideo {
+		std::vector<Fn<void(SponsoredForVideo)>> callbacks;
 		mtpRequestId requestId = 0;
 		crl::time lastReceived = 0;
 	};
@@ -174,10 +225,15 @@ private:
 	void parse(
 		not_null<History*> history,
 		const MTPmessages_sponsoredMessages &list);
+	void parseForVideo(
+		not_null<PeerData*> peer,
+		const MTPmessages_sponsoredMessages &list);
 	void append(
+		Fn<not_null<std::vector<Entry>*>()> entries,
 		not_null<History*> history,
-		List &list,
 		const MTPSponsoredMessage &message);
+	[[nodiscard]] SponsoredForVideo prepareForVideo(
+		not_null<PeerData*> peer);
 	void clearOldRequests();
 
 	const Entry *find(const FullMsgId &fullId) const;
@@ -188,6 +244,9 @@ private:
 	base::flat_map<not_null<History*>, List> _data;
 	base::flat_map<not_null<History*>, Request> _requests;
 	base::flat_map<RandomId, Request> _viewRequests;
+
+	base::flat_map<not_null<PeerData*>, ListForVideo> _dataForVideo;
+	base::flat_map<not_null<PeerData*>, RequestForVideo> _requestsForVideo;
 
 	rpl::event_stream<FullMsgId> _itemRemoved;
 

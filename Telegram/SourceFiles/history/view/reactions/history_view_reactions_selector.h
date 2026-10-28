@@ -86,7 +86,8 @@ public:
 		Fn<void(bool fast)> close,
 		IconFactory iconFactory = nullptr,
 		Fn<bool()> paused = nullptr,
-		bool child = false);
+		bool child = false,
+		QWidget *mediaPreviewParent = nullptr);
 #if 0 // not ready
 	Selector(
 		not_null<QWidget*> parent,
@@ -110,6 +111,8 @@ public:
 	[[nodiscard]] int minimalHeight(int fullWidth) const;
 	[[nodiscard]] int countAppearedWidth(float64 progress) const;
 	void setSpecialExpandTopSkip(int skip);
+	void setBubbleUp(bool bubbleUp);
+	void setExpandDown(bool expandDown);
 	void initGeometry(int innerTop);
 	void beforeDestroy();
 
@@ -153,8 +156,10 @@ private:
 		IconFactory iconFactory,
 		Fn<bool()> paused,
 		Fn<void(bool fast)> close,
-		bool child);
+		bool child,
+		QWidget *mediaPreviewParent);
 
+	void showEvent(QShowEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 	void mouseMoveEvent(QMouseEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
@@ -175,6 +180,7 @@ private:
 
 	[[nodiscard]] int recentCount() const;
 	[[nodiscard]] int countSkipLeft() const;
+	[[nodiscard]] bool inVisibleArea(QPoint position) const;
 	[[nodiscard]] int lookupSelectedIndex(QPoint position) const;
 	void setSelected(int index);
 
@@ -185,12 +191,15 @@ private:
 	ChosenReaction lookupChosen(const Data::ReactionId &id) const;
 	void preloadAllRecentsAnimations();
 
+	[[nodiscard]] int skipYBubbleUpShift() const;
+
 	const style::EmojiPan &_st;
 	const std::shared_ptr<ChatHelpers::Show> _show;
 	const Data::PossibleItemReactions _reactions;
 	const std::vector<DocumentId> _recent;
 	const ChatHelpers::EmojiListMode _listMode;
 	const Fn<bool()> _paused;
+	QWidget *_mediaPreviewParent = nullptr;
 	Fn<void()> _jumpedToPremium;
 	Ui::RoundAreaWithShadow _cachedRound;
 	std::unique_ptr<Strip> _strip;
@@ -234,6 +243,7 @@ private:
 	int _skipx = 0;
 	int _skipy = 0;
 	int _pressed = -1;
+	crl::time _shownAt = 0;
 	bool _useTransparency = false;
 	bool _appearing = false;
 	bool _toggling = false;
@@ -243,6 +253,8 @@ private:
 	bool _small = false;
 	bool _over = false;
 	bool _low = false;
+	bool _bubbleUp = false;
+	bool _expandDown = false;
 
 };
 

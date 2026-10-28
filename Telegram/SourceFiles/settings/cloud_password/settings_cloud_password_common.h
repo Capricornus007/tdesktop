@@ -10,9 +10,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_variant.h"
 #include "ui/widgets/box_content_divider.h"
 
+#include "styles/style_boxes.h"
+#include "styles/style_settings.h"
+
 namespace Ui {
-template <typename Widget>
-class CenterWrap;
 class FlatLabel;
 class InputField;
 class LinkButton;
@@ -34,6 +35,7 @@ struct StepData {
 	QString email;
 	int unconfirmedEmailLengthCode;
 	bool setOnlyRecoveryEmail = false;
+	bool suggestionValidate = false;
 
 	struct ProcessRecover {
 		bool setNewPassword = false;
@@ -58,30 +60,34 @@ void SetupHeader(
 [[nodiscard]] not_null<Ui::PasswordInput*> AddPasswordField(
 	not_null<Ui::VerticalLayout*> content,
 	rpl::producer<QString> &&placeholder,
-	const QString &text);
+	const QString &text,
+	const style::InputField &st = st::settingLocalPasscodeInputField);
 
-[[nodiscard]] not_null<Ui::CenterWrap<Ui::InputField>*> AddWrappedField(
+[[nodiscard]] not_null<Ui::InputField*> AddWrappedField(
 	not_null<Ui::VerticalLayout*> content,
 	rpl::producer<QString> &&placeholder,
 	const QString &text);
 
 [[nodiscard]] not_null<Ui::FlatLabel*> AddError(
 	not_null<Ui::VerticalLayout*> content,
-	Ui::PasswordInput *input);
+	Ui::PasswordInput *input,
+	const style::FlatLabel &st = st::settingLocalPasscodeError,
+	const style::margins &padding = st::changePhoneDescriptionPadding);
 
 [[nodiscard]] not_null<Ui::RoundButton*> AddDoneButton(
 	not_null<Ui::VerticalLayout*> content,
 	rpl::producer<QString> &&text);
 
 [[nodiscard]] not_null<Ui::LinkButton*> AddLinkButton(
-	not_null<Ui::CenterWrap<Ui::InputField>*> wrap,
+	not_null<Ui::InputField*> input,
 	rpl::producer<QString> &&text);
 
 void AddSkipInsteadOfField(not_null<Ui::VerticalLayout*> content);
 void AddSkipInsteadOfError(not_null<Ui::VerticalLayout*> content);
 
 struct BottomButton {
-	QPointer<Ui::RpWidget> content;
+	base::weak_qptr<Ui::RpWidget> content;
+	base::weak_qptr<Ui::RpWidget> button;
 	rpl::producer<bool> isBottomFillerShown;
 };
 

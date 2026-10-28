@@ -11,8 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/localstorage.h"
 #include "platform/platform_specific.h"
 #include "ui/platform/ui_platform_window.h"
+#include "ui/platform/ui_platform_window_title.h"
 #include "platform/platform_window_title.h"
 #include "history/history.h"
+#include "info/media/info_media_widget.h" // SharedMediaTitle.
+#include "window/window_saved_windows.h"
 #include "window/window_separate_id.h"
 #include "window/window_session_controller.h"
 #include "window/window_lock_widgets.h"
@@ -22,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/sandbox.h"
 #include "core/shortcuts.h"
+#include "core/update_channel.h"
 #include "lang/lang_keys.h"
 #include "data/data_session.h"
 #include "data/data_forum_topic.h"
@@ -30,16 +34,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "base/options.h"
 #include "base/crc32hash.h"
+#include "ui/boxes/confirm_box.h"
 #include "ui/toast/toast.h"
 #include "ui/widgets/shadow.h"
+#include "ui/controls/title_sub_widget.h"
 #include "ui/controls/window_outdated_bar.h"
+#include "ui/controls/window_screen_reader_bar.h"
 #include "ui/painter.h"
+#include "ui/screen_reader_mode.h"
 #include "ui/ui_utility.h"
 #include "apiwrap.h"
 #include "mainwidget.h" // session->content()->windowShown().
 #include "tray.h"
 #include "styles/style_window.h"
 #include "styles/style_dialogs.h" // ChildSkip().x() for new child windows.
+
+#ifdef Q_OS_MAC
+#include "platform/mac/global_menu_mac.h"
+#endif // Q_OS_MAC
 
 #include <QtCore/QMimeData>
 #include <QtGui/QWindow>
@@ -54,6 +66,13 @@ namespace {
 constexpr auto kSaveWindowPositionTimeout = crl::time(1000);
 
 using Core::WindowPosition;
+
+[[nodiscard]] QRect ScreenAvailableGeometry(not_null<const QWidget*> widget) {
+	// When the last monitor is removed Qt keeps delivering resize events
+	// while QGuiApplication has no screens at all, so screen() is nullptr.
+	const auto screen = widget->screen();
+	return screen ? screen->availableGeometry() : QRect();
+}
 
 [[nodiscard]] QPoint ChildSkip() {
 	const auto skipx = st::defaultDialogRow.padding.left()
@@ -70,13 +89,16 @@ using Core::WindowPosition;
 
 base::options::toggle OptionNewWindowsSizeAsFirst({
 	.id = kOptionNewWindowsSizeAsFirst,
-	.name = "Adjust size of new chat windows.",
+	.name = "Adjust size of new chat windows",
 	.description = "Open new windows with a size of the main window.",
 });
 
 base::options::toggle OptionDisableTouchbar({
 	.id = kOptionDisableTouchbar,
 	.name = "Disable Touch Bar (macOS only).",
+#ifdef Q_OS_MAC
+	.defaultValue = !Platform::HasTouchBar(),
+#endif // Q_OS_MAC
 	.scope = [] {
 #ifdef Q_OS_MAC
 		return true;
@@ -87,42 +109,24 @@ base::options::toggle OptionDisableTouchbar({
 	.restartRequired = true,
 });
 
-[[nodiscard]] QString TitleFromSeparateId(
+[[nodiscard]] QString TitleFromSeparateSharedMedia(
 		const Core::WindowTitleContent &settings,
 		const SeparateId &id) {
-	if (id.sharedMedia == SeparateSharedMediaType::None
-		|| !id.sharedMediaPeer()) {
+	if (id.type != SeparateType::SharedMedia) {
 		return QString();
 	}
-	const auto result = (id.sharedMedia == SeparateSharedMediaType::Photos)
-		? tr::lng_media_type_photos(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::Videos)
-		? tr::lng_media_type_videos(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::Files)
-		? tr::lng_media_type_files(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::Audio)
-		? tr::lng_media_type_songs(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::Links)
-		? tr::lng_media_type_links(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::GIF)
-		? tr::lng_media_type_gifs(tr::now)
-		: (id.sharedMedia == SeparateSharedMediaType::Voices)
-		? tr::lng_media_type_audios(tr::now)
-		: QString();
-
+	const auto type = id.sharedMediaType;
+	const auto result = Info::Media::SharedMediaTitle(type)(tr::now);
 	if (settings.hideChatName) {
 		return result;
 	}
-	const auto peer = id.sharedMediaPeer();
-	const auto topicRootId = id.sharedMediaTopicRootId();
-	const auto topic = topicRootId
-		? peer->forumTopicFor(topicRootId)
-		: nullptr;
+	const auto thread = id.thread;
+	const auto topic = thread->asTopic();
 	const auto name = topic
 		? topic->title()
-		: peer->isSelf()
+		: thread->peer()->isSelf()
 		? tr::lng_saved_messages(tr::now)
-		: peer->name();
+		: thread->peer()->name();
 	const auto wrapped = st::wrap_rtl(name);
 	return name + u" @ "_q + result;
 }
@@ -193,7 +197,7 @@ void OverrideApplicationIcon(QImage image) {
 	OverridenIcon() = std::move(image);
 }
 
-QIcon CreateOfficialIcon(Main::Session *session) {
+QIcon CreateSupportIcon(Main::Session *session) {
 	const auto support = (session && session->supportMode());
 	if (!support) {
 		return QIcon();
@@ -207,22 +211,27 @@ QIcon CreateOfficialIcon(Main::Session *session) {
 }
 
 QIcon CreateIcon(Main::Session *session, bool returnNullIfDefault) {
-	const auto officialIcon = CreateOfficialIcon(session);
-	if (!officialIcon.isNull() || returnNullIfDefault) {
-		return officialIcon;
+	const auto supportIcon = CreateSupportIcon(session);
+	if (!supportIcon.isNull() || returnNullIfDefault) {
+		return supportIcon;
 	}
 
-	auto result = QIcon(Ui::PixmapFromImage(base::duplicate(Logo())));
+	const auto officialIcon = QIcon(
+		Ui::PixmapFromImage(base::duplicate(Logo())));
 
 	if constexpr (!Platform::IsLinux()) {
-		return result;
+		return officialIcon;
 	}
 
 	const auto iconFromTheme = QIcon::fromTheme(
 		Platform::ApplicationIconName(),
-		result);
+		officialIcon);
 
-	result = QIcon();
+	if (!Platform::IsX11()) {
+		return iconFromTheme;
+	}
+
+	QIcon result;
 
 	static const auto iconSizes = {
 		16,
@@ -385,21 +394,35 @@ MainWindow::MainWindow(not_null<Controller*> controller)
 : _controller(controller)
 , _positionUpdatedTimer([=] { savePosition(); })
 , _outdated(Ui::CreateOutdatedBar(body(), cWorkingDir()))
+, _screenReaderBar(Ui::CreateScreenReaderBar(body(), [=] {
+	controller->show(Ui::MakeConfirmBox({
+		.text = tr::lng_screen_reader_confirm_text(tr::now),
+		.confirmed = [=](Fn<void()> close) {
+			Core::App().settings().writePref<bool>(
+				Core::kScreenReaderModeDisabledKey,
+				true);
+			Core::App().saveSettingsDelayed();
+			Ui::SetScreenReaderModeDisabled(true);
+			close();
+		},
+		.confirmText = tr::lng_screen_reader_confirm_disable(),
+	}));
+}))
 , _body(body()) {
 	style::PaletteChanged(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		updatePalette();
 	}, lifetime());
 
 	Core::App().unreadBadgeChanges(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		updateTitle();
 		unreadCounterChangedHook();
 		Core::App().tray().updateIconCounters();
 	}, lifetime());
 
 	Core::App().settings().workModeChanges(
-	) | rpl::start_with_next([=](Core::Settings::WorkMode mode) {
+	) | rpl::on_next([=](Core::Settings::WorkMode mode) {
 		workmodeUpdated(mode);
 	}, lifetime());
 
@@ -408,32 +431,39 @@ MainWindow::MainWindow(not_null<Controller*> controller)
 	}
 
 	windowActiveValue(
-	) | rpl::skip(1) | rpl::start_with_next([=](bool active) {
+	) | rpl::skip(1) | rpl::on_next([=](bool active) {
 		InvokeQueued(this, [=] {
 			handleActiveChanged(active);
 		});
 	}, lifetime());
 
 	shownValue(
-	) | rpl::skip(1) | rpl::start_with_next([=](bool visible) {
+	) | rpl::skip(1) | rpl::on_next([=](bool visible) {
 		InvokeQueued(this, [=] {
 			handleVisibleChanged(visible);
 		});
 	}, lifetime());
 
 	body()->sizeValue(
-	) | rpl::start_with_next([=](QSize size) {
+	) | rpl::on_next([=](QSize size) {
 		updateControlsGeometry();
 	}, lifetime());
 
 	if (_outdated) {
 		_outdated->heightValue(
-		) | rpl::start_with_next([=](int height) {
+		) | rpl::on_next([=](int height) {
 			if (!height) {
 				crl::on_main(this, [=] { _outdated.destroy(); });
 			}
 			updateControlsGeometry();
 		}, _outdated->lifetime());
+	}
+
+	if (_screenReaderBar) {
+		_screenReaderBar->heightValue(
+		) | rpl::on_next([=](int height) {
+			updateControlsGeometry();
+		}, _screenReaderBar->lifetime());
 	}
 
 	Shortcuts::Listen(this);
@@ -493,6 +523,14 @@ void MainWindow::clearWidgets() {
 	updateGlobalMenu();
 }
 
+void MainWindow::updateGlobalMenu() {
+#ifdef Q_OS_MAC
+	Platform::RequestUpdateGlobalMenu();
+#else // Q_OS_MAC
+	updateGlobalMenuHook();
+#endif // Q_OS_MAC
+}
+
 void MainWindow::updateIsActive() {
 	const auto isActive = computeIsActive();
 	if (_isActive != isActive) {
@@ -507,8 +545,11 @@ bool MainWindow::computeIsActive() const {
 QRect MainWindow::desktopRect() const {
 	const auto now = crl::now();
 	if (!_monitorLastGot || now >= _monitorLastGot + crl::time(1000)) {
-		_monitorLastGot = now;
-		_monitorRect = computeDesktopRect();
+		const auto rect = computeDesktopRect();
+		if (!rect.isEmpty()) {
+			_monitorLastGot = now;
+			_monitorRect = rect;
+		}
 	}
 	return _monitorRect;
 }
@@ -520,12 +561,15 @@ void MainWindow::init() {
 
 	if (Ui::Platform::NativeWindowFrameSupported()) {
 		Core::App().settings().nativeWindowFrameChanges(
-		) | rpl::start_with_next([=](bool native) {
+		) | rpl::on_next([=](bool native) {
 			refreshTitleWidget();
 			recountGeometryConstraints();
 		}, lifetime());
 	}
 	refreshTitleWidget();
+	if constexpr (Core::BuildIsCanary) {
+		setupCanaryTitleLabel();
+	}
 
 	updateTitle();
 	updateWindowIcon();
@@ -623,7 +667,14 @@ int MainWindow::computeMinHeight() const {
 		_outdated->resizeToWidth(st::windowMinWidth);
 		return _outdated->height();
 	}();
-	return outdated + st::windowMinHeight;
+	const auto screenReader = [&] {
+		if (!_screenReaderBar) {
+			return 0;
+		}
+		_screenReaderBar->resizeToWidth(st::windowMinWidth);
+		return _screenReaderBar->height();
+	}();
+	return outdated + screenReader + st::windowMinHeight;
 }
 
 void MainWindow::refreshTitleWidget() {
@@ -640,6 +691,39 @@ void MainWindow::refreshTitleWidget() {
 	}
 }
 
+void MainWindow::setupCanaryTitleLabel() {
+	const auto title = titleWidget();
+	if (!title) {
+		return;
+	}
+	const auto layout = Ui::Platform::TitleControlsLayout::Instance();
+	const auto label = Ui::CreateTitleSubWidget(
+		title,
+		st::titleSubWidgetStyle,
+		rpl::single(Core::CanaryTitleLabel()),
+		layout->value(
+		) | rpl::map([](const Ui::Platform::TitleLayout &layout) {
+			return layout.onLeft() ? style::al_right : style::al_left;
+		}),
+		additionalContentPaddingValue());
+	label->lifetime().add([layout] {});
+
+	title->shownValue(
+	) | rpl::skip(1) | rpl::on_next([=] {
+		updateTitle();
+	}, lifetime());
+}
+
+QString MainWindow::nativeTitleSuffix() const {
+	if constexpr (Core::BuildIsCanary) {
+		const auto title = titleWidget();
+		if (!title || title->isHidden()) {
+			return u" \u2022 "_q + Core::CanaryTitleLabel();
+		}
+	}
+	return QString();
+}
+
 void MainWindow::updateMinimumSize() {
 	setMinimumSize(QSize(computeMinWidth(), computeMinHeight()));
 }
@@ -651,6 +735,11 @@ void MainWindow::recountGeometryConstraints() {
 }
 
 WindowPosition MainWindow::initialPosition() const {
+	if (const auto saved = Core::App().savedWindows()) {
+		if (const auto restored = saved->restorePositionFor(id())) {
+			return Core::AdjustToScale(*restored, u"Window"_q);
+		}
+	}
 	const auto active = Core::App().activeWindow();
 	return (!active || active == &controller())
 		? Core::AdjustToScale(
@@ -681,7 +770,7 @@ WindowPosition MainWindow::nextInitialChildPosition(SeparateId childId) {
 	const auto delta = _lastChildIndex
 		? (_lastMyChildCreatePosition - position)
 		: skip;
-	if (qAbs(delta.x()) >= skip.x() || qAbs(delta.y()) >= skip.y()) {
+	if (std::abs(delta.x()) >= skip.x() || std::abs(delta.y()) >= skip.y()) {
 		_lastChildIndex = 1;
 	} else {
 		++_lastChildIndex;
@@ -717,111 +806,12 @@ QRect MainWindow::countInitialGeometry(WindowPosition position) {
 		.w = initialWidth,
 		.h = initialHeight,
 	};
-	return countInitialGeometry(
+	return CountInitialGeometry(
+		this,
 		position,
 		initial,
-		{ st::windowMinWidth, st::windowMinHeight });
-}
-
-QRect MainWindow::countInitialGeometry(
-		WindowPosition position,
-		WindowPosition initial,
-		QSize minSize) const {
-	if (!position.w || !position.h) {
-		return initial.rect();
-	}
-	const auto screen = [&]() -> QScreen* {
-		for (const auto screen : QGuiApplication::screens()) {
-			const auto sum = Platform::ScreenNameChecksum(screen->name());
-			if (position.moncrc == sum) {
-				return screen;
-			}
-		}
-		return nullptr;
-	}();
-	if (!screen) {
-		return initial.rect();
-	}
-	const auto frame = frameMargins();
-	const auto screenGeometry = screen->geometry();
-	const auto availableGeometry = screen->availableGeometry();
-	const auto spaceForInner = availableGeometry.marginsRemoved(frame);
-	DEBUG_LOG(("Window Pos: "
-		"Screen found, screen geometry: %1, %2, %3, %4, "
-		"available: %5, %6, %7, %8"
-		).arg(screenGeometry.x()
-		).arg(screenGeometry.y()
-		).arg(screenGeometry.width()
-		).arg(screenGeometry.height()
-		).arg(availableGeometry.x()
-		).arg(availableGeometry.y()
-		).arg(availableGeometry.width()
-		).arg(availableGeometry.height()));
-	DEBUG_LOG(("Window Pos: "
-		"Window frame margins: %1, %2, %3, %4, "
-		"available space for inner geometry: %5, %6, %7, %8"
-		).arg(frame.left()
-		).arg(frame.top()
-		).arg(frame.right()
-		).arg(frame.bottom()
-		).arg(spaceForInner.x()
-		).arg(spaceForInner.y()
-		).arg(spaceForInner.width()
-		).arg(spaceForInner.height()));
-
-	const auto x = spaceForInner.x() - screenGeometry.x();
-	const auto y = spaceForInner.y() - screenGeometry.y();
-	const auto w = spaceForInner.width();
-	const auto h = spaceForInner.height();
-	if (w < st::windowMinWidth || h < st::windowMinHeight) {
-		return initial.rect();
-	}
-	if (position.x < x) position.x = x;
-	if (position.y < y) position.y = y;
-	if (position.w > w) position.w = w;
-	if (position.h > h) position.h = h;
-	const auto rightPoint = position.x + position.w;
-	const auto screenRightPoint = x + w;
-	if (rightPoint > screenRightPoint) {
-		const auto distance = rightPoint - screenRightPoint;
-		const auto newXPos = position.x - distance;
-		if (newXPos >= x) {
-			position.x = newXPos;
-		} else {
-			position.x = x;
-			const auto newRightPoint = position.x + position.w;
-			const auto newDistance = newRightPoint - screenRightPoint;
-			position.w -= newDistance;
-		}
-	}
-	const auto bottomPoint = position.y + position.h;
-	const auto screenBottomPoint = y + h;
-	if (bottomPoint > screenBottomPoint) {
-		const auto distance = bottomPoint - screenBottomPoint;
-		const auto newYPos = position.y - distance;
-		if (newYPos >= y) {
-			position.y = newYPos;
-		} else {
-			position.y = y;
-			const auto newBottomPoint = position.y + position.h;
-			const auto newDistance = newBottomPoint - screenBottomPoint;
-			position.h -= newDistance;
-		}
-	}
-	position.x += screenGeometry.x();
-	position.y += screenGeometry.y();
-	if ((position.x + st::windowMinWidth
-		> screenGeometry.x() + screenGeometry.width())
-		|| (position.y + st::windowMinHeight
-			> screenGeometry.y() + screenGeometry.height())) {
-		return initial.rect();
-	}
-	DEBUG_LOG(("Window Pos: Resulting geometry is %1, %2, %3, %4"
-		).arg(position.x
-		).arg(position.y
-		).arg(position.w
-		).arg(position.h));
-	return position.rect();
+		{ st::windowMinWidth, st::windowMinHeight },
+		u"Window"_q);
 }
 
 void MainWindow::firstShow() {
@@ -878,6 +868,12 @@ void MainWindow::updateControlsGeometry() {
 		_outdated->moveToLeft(inner.x(), bodyTop);
 		bodyTop += _outdated->height();
 	}
+	if (_screenReaderBar) {
+		Ui::SendPendingMoveResizeEvents(_screenReaderBar.data());
+		_screenReaderBar->resizeToWidth(inner.width());
+		_screenReaderBar->moveToLeft(inner.x(), bodyTop);
+		bodyTop += _screenReaderBar->height();
+	}
 	if (_rightColumn) {
 		bodyWidth -= _rightColumn->width();
 		_rightColumn->setGeometry(bodyWidth, bodyTop, inner.width() - bodyWidth, inner.height() - (bodyTop - inner.y()));
@@ -890,6 +886,7 @@ void MainWindow::updateTitle() {
 		return;
 	}
 
+	const auto suffix = nativeTitleSuffix();
 	const auto settings = Core::App().settings().windowTitleContent();
 	const auto locked = Core::App().passcodeLocked();
 	const auto counter = settings.hideTotalUnread
@@ -902,11 +899,11 @@ void MainWindow::updateTitle() {
 		&& Core::App().domain().accountsAuthedCount() > 1)
 		? st::wrap_rtl(session->authedName())
 		: QString();
-	const auto separateIdTitle = session
-		? TitleFromSeparateId(settings, session->windowId())
+	const auto separateSharedMediaTitle = session
+		? TitleFromSeparateSharedMedia(settings, session->windowId())
 		: QString();
-	if (!separateIdTitle.isEmpty()) {
-		setTitle(separateIdTitle);
+	if (!separateSharedMediaTitle.isEmpty()) {
+		setTitle(separateSharedMediaTitle + suffix);
 		return;
 	}
 	const auto key = (session && !settings.hideChatName)
@@ -914,7 +911,7 @@ void MainWindow::updateTitle() {
 		: Dialogs::Key();
 	const auto thread = key ? key.thread() : nullptr;
 	if (!thread) {
-		setTitle((user.isEmpty() ? u"64Gram"_q : user) + added);
+		setTitle((user.isEmpty() ? u"64Gram"_q : user) + added + suffix);
 		return;
 	}
 	const auto history = thread->owningHistory();
@@ -934,22 +931,28 @@ void MainWindow::updateTitle() {
 		: !added.isEmpty()
 		? u" \u2013"_q
 		: QString();
-	setTitle(primary + middle + added);
+	setTitle(primary + middle + added + suffix);
 }
 
 QRect MainWindow::computeDesktopRect() const {
-	return screen()->availableGeometry();
+	return ScreenAvailableGeometry(this);
 }
 
 void MainWindow::savePosition(Qt::WindowState state) {
+	if (!isVisible() || !positionInited()) {
+		return;
+	}
+
 	if (state == Qt::WindowActive) {
 		state = windowHandle()->windowState();
 	}
-
-	if (state == Qt::WindowMinimized
-		|| !isVisible()
-		|| !Core::App().savingPositionFor(&controller())
-		|| !positionInited()) {
+	if (state == Qt::WindowMinimized) {
+		return;
+	}
+	if (const auto saved = Core::App().savedWindows()) {
+		saved->scheduleSave();
+	}
+	if (!Core::App().savingPositionFor(&controller())) {
 		return;
 	}
 
@@ -998,7 +1001,55 @@ WindowPosition MainWindow::withScreenInPosition(
 	return PositionWithScreen(
 		position,
 		this,
-		{ st::windowMinWidth, st::windowMinHeight });
+		{ st::windowMinWidth, st::windowMinHeight },
+		u"Window"_q);
+}
+
+WindowPosition MainWindow::countPositionForSave() {
+	auto result = WindowPosition{ .scale = cScale() };
+	const auto handle = windowHandle();
+	const auto state = handle ? handle->windowState() : Qt::WindowNoState;
+	const auto windowScreen = screen();
+	const auto screenGeometry = windowScreen
+		? windowScreen->geometry()
+		: QRect();
+	if (windowScreen) {
+		result.moncrc = Platform::ScreenNameChecksum(windowScreen->name());
+	}
+	if (state == Qt::WindowMaximized || state == Qt::WindowFullScreen) {
+		result.maximized = 1;
+		const auto normal = normalGeometry();
+		result.x = normal.x() - screenGeometry.x();
+		result.y = normal.y() - screenGeometry.y();
+		result.w = normal.width();
+		result.h = normal.height();
+		return result;
+	}
+	const auto rect = body()->mapToGlobal(body()->rect());
+	result.x = rect.x();
+	result.y = rect.y();
+	result.w = rect.width() - (_rightColumn ? _rightColumn->width() : 0);
+	result.h = rect.height();
+	result = withScreenInPosition(result);
+	result.x -= screenGeometry.x();
+	result.y -= screenGeometry.y();
+	return result;
+}
+
+void MainWindow::applySavedPosition(const Core::WindowPosition &position) {
+	const auto geometry = countInitialGeometry(
+		Core::AdjustToScale(position, u"Window"_q));
+	const auto handle = windowHandle();
+	const auto state = handle ? handle->windowState() : Qt::WindowNoState;
+	if (position.maximized) {
+		setGeometry(geometry);
+		setWindowState(Qt::WindowMaximized);
+	} else {
+		if (state == Qt::WindowMaximized || state == Qt::WindowFullScreen) {
+			setWindowState(Qt::WindowNoState);
+		}
+		setGeometry(geometry);
+	}
 }
 
 bool MainWindow::minimizeToTray() {
@@ -1012,7 +1063,7 @@ bool MainWindow::minimizeToTray() {
 	return true;
 }
 
-void MainWindow::showRightColumn(object_ptr<TWidget> widget) {
+void MainWindow::showRightColumn(object_ptr<Ui::RpWidget> widget) {
 	const auto wasWidth = width();
 	const auto wasRightWidth = _rightColumn ? _rightColumn->width() : 0;
 	_rightColumn = std::move(widget);
@@ -1041,12 +1092,15 @@ void MainWindow::showRightColumn(object_ptr<TWidget> widget) {
 }
 
 int MainWindow::maximalExtendBy() const {
-	auto desktop = screen()->availableGeometry();
+	const auto desktop = ScreenAvailableGeometry(this);
 	return std::max(desktop.width() - body()->width(), 0);
 }
 
 bool MainWindow::canExtendNoMove(int extendBy) const {
-	auto desktop = screen()->availableGeometry();
+	const auto desktop = ScreenAvailableGeometry(this);
+	if (desktop.isEmpty()) {
+		return false;
+	}
 	auto inner = body()->mapToGlobal(body()->rect());
 	auto innerRight = (inner.x() + inner.width() + extendBy);
 	auto desktopRight = (desktop.x() + desktop.width());
@@ -1054,7 +1108,11 @@ bool MainWindow::canExtendNoMove(int extendBy) const {
 }
 
 int MainWindow::tryToExtendWidthBy(int addToWidth) {
-	auto desktop = screen()->availableGeometry();
+	const auto desktop = ScreenAvailableGeometry(this);
+	if (desktop.isEmpty()) {
+		updateControlsGeometry();
+		return 0;
+	}
 	auto inner = body()->mapToGlobal(body()->rect());
 	accumulate_min(
 		addToWidth,
@@ -1073,12 +1131,16 @@ int MainWindow::tryToExtendWidthBy(int addToWidth) {
 
 void MainWindow::launchDrag(
 		std::unique_ptr<QMimeData> data,
-		Fn<void()> &&callback) {
+		Fn<void()> &&callback,
+		QPixmap pixmap) {
 	// Qt destroys this QDrag automatically after the drag is finished
 	// We must not delete this at the end of this function, as this breaks DnD on Linux
 	auto drag = new QDrag(this);
 	KUrlMimeData::exportUrlsToPortal(data.get());
 	drag->setMimeData(data.release());
+	if (!pixmap.isNull()) {
+		drag->setPixmap(std::move(pixmap));
+	}
 	drag->exec(Qt::CopyAction);
 
 	// We don't receive mouseReleaseEvent when drag is finished.
@@ -1107,7 +1169,8 @@ int32 DefaultScreenNameChecksum(const QString &name) {
 WindowPosition PositionWithScreen(
 		WindowPosition position,
 		const QScreen *chosen,
-		QSize minimal) {
+		QSize minimal,
+		const QString &name) {
 	if (!chosen) {
 		return position;
 	}
@@ -1125,26 +1188,136 @@ WindowPosition PositionWithScreen(
 		position.y = available.y() + available.height() - position.h;
 	}
 	const auto geometry = chosen->geometry();
-	DEBUG_LOG(("Window Pos: Screen found, geometry: %1, %2, %3, %4"
+	DEBUG_LOG(("%1 Pos: Screen found, geometry: %2, %3, %4, %5"
+		).arg(name
 		).arg(geometry.x()
 		).arg(geometry.y()
 		).arg(geometry.width()
 		).arg(geometry.height()));
-	position.x -= geometry.x();
-	position.y -= geometry.y();
-	position.moncrc = Platform::ScreenNameChecksum(chosen->name());
 	return position;
 }
 
 WindowPosition PositionWithScreen(
 		WindowPosition position,
 		not_null<const QWidget*> widget,
-		QSize minimal) {
+		QSize minimal,
+		const QString &name) {
 	const auto screen = widget->screen();
 	return PositionWithScreen(
 		position,
 		screen ? screen : QGuiApplication::primaryScreen(),
-		minimal);
+		minimal,
+		name);
+}
+
+QRect CountInitialGeometry(
+		not_null<const Ui::RpWindow*> widget,
+		WindowPosition position,
+		WindowPosition initial,
+		QSize minSize,
+		const QString &name) {
+	if (!position.w || !position.h) {
+		return initial.rect();
+	}
+	const auto screen = [&]() -> QScreen* {
+		for (const auto screen : QGuiApplication::screens()) {
+			const auto sum = Platform::ScreenNameChecksum(screen->name());
+			if (position.moncrc == sum) {
+				return screen;
+			}
+		}
+		return QGuiApplication::screenAt(position.rect().center());
+	}();
+	if (!screen) {
+		return initial.rect();
+	}
+	const auto frame = widget->frameMargins();
+	const auto screenGeometry = screen->geometry();
+	const auto availableGeometry = screen->availableGeometry();
+	const auto spaceForInner = availableGeometry.marginsRemoved(frame);
+	DEBUG_LOG(("%1 Pos: "
+		"Screen found, screen geometry: %2, %3, %4, %5, "
+		"available: %6, %7, %8, %9"
+		).arg(name
+		).arg(screenGeometry.x()
+		).arg(screenGeometry.y()
+		).arg(screenGeometry.width()
+		).arg(screenGeometry.height()
+		).arg(availableGeometry.x()
+		).arg(availableGeometry.y()
+		).arg(availableGeometry.width()
+		).arg(availableGeometry.height()));
+	DEBUG_LOG(("%1 Pos: "
+		"Window frame margins: %2, %3, %4, %5, "
+		"available space for inner geometry: %6, %7, %8, %9"
+		).arg(name
+		).arg(frame.left()
+		).arg(frame.top()
+		).arg(frame.right()
+		).arg(frame.bottom()
+		).arg(spaceForInner.x()
+		).arg(spaceForInner.y()
+		).arg(spaceForInner.width()
+		).arg(spaceForInner.height()));
+
+	const auto x = spaceForInner.x()
+		- (position.moncrc ? screenGeometry.x() : 0);
+	const auto y = spaceForInner.y()
+		- (position.moncrc ? screenGeometry.y() : 0);
+	const auto w = spaceForInner.width();
+	const auto h = spaceForInner.height();
+	if (w < st::windowMinWidth || h < st::windowMinHeight) {
+		return initial.rect();
+	}
+	if (position.x < x) position.x = x;
+	if (position.y < y) position.y = y;
+	if (position.w > w) position.w = w;
+	if (position.h > h) position.h = h;
+	const auto rightPoint = position.x + position.w;
+	const auto screenRightPoint = x + w;
+	if (rightPoint > screenRightPoint) {
+		const auto distance = rightPoint - screenRightPoint;
+		const auto newXPos = position.x - distance;
+		if (newXPos >= x) {
+			position.x = newXPos;
+		} else {
+			position.x = x;
+			const auto newRightPoint = position.x + position.w;
+			const auto newDistance = newRightPoint - screenRightPoint;
+			position.w -= newDistance;
+		}
+	}
+	const auto bottomPoint = position.y + position.h;
+	const auto screenBottomPoint = y + h;
+	if (bottomPoint > screenBottomPoint) {
+		const auto distance = bottomPoint - screenBottomPoint;
+		const auto newYPos = position.y - distance;
+		if (newYPos >= y) {
+			position.y = newYPos;
+		} else {
+			position.y = y;
+			const auto newBottomPoint = position.y + position.h;
+			const auto newDistance = newBottomPoint - screenBottomPoint;
+			position.h -= newDistance;
+		}
+	}
+	if (position.moncrc) {
+		position.x += screenGeometry.x();
+		position.y += screenGeometry.y();
+	}
+	if ((position.x + st::windowMinWidth
+		> screenGeometry.x() + screenGeometry.width())
+		|| (position.y + st::windowMinHeight
+			> screenGeometry.y() + screenGeometry.height())) {
+		return initial.rect();
+	}
+	DEBUG_LOG(("%1 Pos: Resulting geometry is %2, %3, %4, %5"
+		).arg(name
+		).arg(position.x
+		).arg(position.y
+		).arg(position.w
+		).arg(position.h));
+	return position.rect();
 }
 
 } // namespace Window

@@ -79,7 +79,7 @@ Step::Step(
 			: st::introDescription)) {
 	hide();
 	style::PaletteChanged(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (!_coverMask.isNull()) {
 			_coverMask = QPixmap();
 			prepareCoverMask();
@@ -87,18 +87,19 @@ Step::Step(
 	}, lifetime());
 
 	_errorText.value(
-	) | rpl::start_with_next([=](const QString &text) {
+	) | rpl::on_next([=](const QString &text) {
 		refreshError(text);
 	}, lifetime());
 
 	_titleText.value(
-	) | rpl::start_with_next([=](const QString &text) {
+	) | rpl::on_next([=](const QString &text) {
 		_title->setText(text);
+		accessibilityNameChanged();
 		updateLabelsPosition();
 	}, lifetime());
 
 	_descriptionText.value(
-	) | rpl::start_with_next([=](const TextWithEntities &text) {
+	) | rpl::on_next([=](const TextWithEntities &text) {
 		const auto label = _description->entity();
 		const auto hasSpoiler = ranges::contains(
 			text.entities,
@@ -106,6 +107,7 @@ Step::Step(
 			&EntityInText::type);
 		label->setMarkedText(text);
 		label->setAttribute(Qt::WA_TransparentForMouseEvents, hasSpoiler);
+		accessibilityDescriptionChanged();
 		updateLabelsPosition();
 	}, lifetime());
 }
@@ -131,6 +133,10 @@ rpl::producer<const style::RoundButton*> Step::nextButtonStyle() const {
 	return rpl::single((const style::RoundButton*)(nullptr));
 }
 
+rpl::producer<> Step::nextButtonFocusRequests() const {
+	return rpl::never();
+}
+
 void Step::goBack() {
 	if (_goCallback) {
 		_goCallback(nullptr, StackAction::Back, Animate::Back);
@@ -147,6 +153,10 @@ void Step::goReplace(Step *step, Animate animate) {
 	if (_goCallback) {
 		_goCallback(step, StackAction::Replace, animate);
 	}
+}
+
+Step *Step::stepBelow() const {
+	return _stepBelowCallback ? _stepBelowCallback() : nullptr;
 }
 
 void Step::finish(const MTPauth_Authorization &auth, QImage &&photo) {
@@ -368,14 +378,15 @@ void Step::fillSentCodeData(const MTPDauth_sentCode &data) {
 		bad("MissedCall");
 	}, [&](const MTPDauth_sentCodeTypeFirebaseSms &) {
 		bad("FirebaseSms");
-	}, [&](const MTPDauth_sentCodeTypeEmailCode &) {
-		bad("EmailCode");
+	}, [&](const MTPDauth_sentCodeTypeEmailCode &data) {
+		getData()->emailPatternLogin = qs(data.vemail_pattern());
+		getData()->codeLength = data.vlength().v;
 	}, [&](const MTPDauth_sentCodeTypeSmsWord &) {
 		bad("SmsWord");
 	}, [&](const MTPDauth_sentCodeTypeSmsPhrase &) {
 		bad("SmsPhrase");
 	}, [&](const MTPDauth_sentCodeTypeSetUpEmailRequired &) {
-		bad("SetUpEmailRequired");
+		getData()->emailStatus = EmailStatus::SetupRequired;
 	});
 }
 
@@ -453,9 +464,11 @@ void Step::paintCover(QPainter &p, int top) {
 	}
 	if (top < 0) {
 		auto shown = float64(coverHeight) / st::introCoverHeight;
-		auto leftShown = qRound(shown * (left + st::introCoverLeft.width()));
+		const auto leftFull = left + st::introCoverLeft.width();
+		auto leftShown = int(base::SafeRound(shown * leftFull));
 		left = leftShown - st::introCoverLeft.width();
-		auto rightShown = qRound(shown * (right + st::introCoverRight.width()));
+		const auto rightFull = right + st::introCoverRight.width();
+		auto rightShown = int(base::SafeRound(shown * rightFull));
 		right = rightShown - st::introCoverRight.width();
 	}
 	st::introCoverLeft.paint(p, left, coverHeight - st::introCoverLeft.height(), width());
@@ -464,7 +477,8 @@ void Step::paintCover(QPainter &p, int top) {
 	auto planeLeft = (width() - st::introCoverIcon.width()) / 2 - st::introCoverIconLeft;
 	auto planeTop = top + st::introCoverIconTop;
 	if (top < 0 && !_hasCover) {
-		auto deltaLeft = -qRound(float64(st::introPlaneWidth / st::introPlaneHeight) * top);
+		const auto ratio = float64(st::introPlaneWidth / st::introPlaneHeight);
+		auto deltaLeft = -int(base::SafeRound(ratio * top));
 //		auto deltaTop = top;
 		planeLeft += deltaLeft;
 	//	planeTop += top;
@@ -486,7 +500,7 @@ int Step::contentTop() const {
 				/ (st::introStepHeightFull - st::windowMinHeight),
 			0.,
 			1.);
-		result += qRound(added * st::introContentTopAdd);
+		result += int(base::SafeRound(added * st::introContentTopAdd));
 	}
 	return result;
 }
@@ -589,6 +603,10 @@ void Step::setShowAnimationClipping(QRect clipping) {
 void Step::setGoCallback(
 		Fn<void(Step *step, StackAction action, Animate animate)> callback) {
 	_goCallback = std::move(callback);
+}
+
+void Step::setStepBelowCallback(Fn<Step*()> callback) {
+	_stepBelowCallback = std::move(callback);
 }
 
 void Step::setShowResetCallback(Fn<void()> callback) {

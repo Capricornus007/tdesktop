@@ -9,7 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "storage/storage_shared_media.h"
 #include "layout/layout_selection.h"
+#include "ui/rect.h"
 #include "ui/painter.h"
+#include "ui/rows_scroll_cache.h"
 #include "styles/style_chat_helpers.h"
 #include "styles/style_info.h"
 
@@ -34,7 +36,7 @@ bool ListSection::empty() const {
 UniversalMsgId ListSection::minId() const {
 	Expects(!empty());
 
-	return GetUniversalId(_items.back()->getItem());
+	return _minId;
 }
 
 void ListSection::setTop(int top) {
@@ -45,12 +47,24 @@ int ListSection::top() const {
 	return _top;
 }
 
+void ListSection::setCanReorder(bool value) {
+	_canReorder = value;
+}
+
+void ListSection::setMinGridSize(int value) {
+	_minGridSize = value;
+}
+
 int ListSection::height() const {
 	return _height;
 }
 
 int ListSection::bottom() const {
 	return top() + height();
+}
+
+bool ListSection::isOneColumn() const {
+	return _itemsInRow == 1;
 }
 
 bool ListSection::addItem(not_null<BaseLayout*> item) {
@@ -91,27 +105,50 @@ bool ListSection::belongsHere(
 void ListSection::appendItem(not_null<BaseLayout*> item) {
 	_items.push_back(item);
 	_byItem.emplace(item->getItem(), item);
+	_minId = GetUniversalId(item->getItem());
 }
 
 bool ListSection::removeItem(not_null<const HistoryItem*> item) {
 	if (const auto i = _byItem.find(item); i != end(_byItem)) {
 		_items.erase(ranges::remove(_items, i->second), end(_items));
 		_byItem.erase(i);
+		if (!_mosaic.empty()) {
+			// Without touching the removed layout, see refreshMinId().
+			_mosaic.clearRows(true);
+			_mosaic.addItems(_items);
+		}
+		refreshMinId();
 		refreshHeight();
 		return true;
 	}
 	return false;
 }
 
+void ListSection::reorderItems(int oldPosition, int newPosition) {
+	base::reorder(_items, oldPosition, newPosition);
+	refreshMinId();
+	refreshHeight();
+}
+
+void ListSection::refreshMinId() {
+	// The layouts are owned by the Provider and it destroys them from its
+	// own itemRemoved() handler, which is invoked before ours. So minId()
+	// must not dereference them, it is recomputed only when all the items
+	// that are left in the section are known to be alive.
+	_minId = _items.empty()
+		? UniversalMsgId()
+		: GetUniversalId(_items.back()->getItem());
+}
+
 QRect ListSection::findItemRect(
 		not_null<const BaseLayout*> item) const {
-	auto position = item->position();
+	const auto position = item->position();
 	if (!_mosaic.empty()) {
 		return _mosaic.findRect(position);
 	}
-	auto top = position / _itemsInRow;
-	auto indexInRow = position % _itemsInRow;
-	auto left = _itemsLeft
+	const auto top = position / _itemsInRow;
+	const auto indexInRow = position % _itemsInRow;
+	const auto left = _itemsLeft
 		+ indexInRow * (_itemWidth + st::infoMediaSkip);
 	return QRect(left, top, _itemWidth, item->height());
 }
@@ -139,9 +176,8 @@ ListFoundItem ListSection::findItemByPoint(QPoint point) const {
 	auto item = *itemIt;
 	auto rect = findItemRect(item);
 	if (point.y() >= rect.top()) {
-		auto shift = floorclamp(
-			point.x(),
-			(_itemWidth + st::infoMediaSkip),
+		auto shift = std::clamp(
+			point.x() / (_itemWidth + st::infoMediaSkip),
 			0,
 			_itemsInRow);
 		while (shift-- && itemIt != _items.end()) {
@@ -222,7 +258,7 @@ void ListSection::paint(
 		const ListContext &context,
 		QRect clip,
 		int outerWidth) const {
-	auto header = headerHeight();
+	const auto header = headerHeight();
 	if (QRect(0, 0, outerWidth, header).intersects(clip)) {
 		p.setPen(st::infoMediaHeaderFg);
 		_header.drawLeftElided(
@@ -234,7 +270,7 @@ void ListSection::paint(
 	}
 	auto localContext = context.layoutContext;
 	if (!_mosaic.empty()) {
-		auto paintItem = [&](not_null<BaseLayout*> item, QPoint point) {
+		const auto paintItem = [&](not_null<BaseLayout*> item, QPoint point) {
 			p.translate(point.x(), point.y());
 			item->paint(
 				p,
@@ -247,22 +283,65 @@ void ListSection::paint(
 		return;
 	}
 
-	auto fromIt = findItemAfterTop(clip.y());
-	auto tillIt = findItemAfterBottom(
+	const auto fromIt = findItemAfterTop(clip.y());
+	const auto tillIt = findItemAfterBottom(
 		fromIt,
 		clip.y() + clip.height());
+	const auto cache = (context.scrollCache
+		&& context.scrollCache->scrolling()
+		&& isOneColumn())
+		? context.scrollCache
+		: nullptr;
 	for (auto it = fromIt; it != tillIt; ++it) {
-		auto item = *it;
+		const auto item = *it;
+		if (item == context.draggedItem) {
+			continue;
+		}
 		auto rect = findItemRect(item);
+		rect.translate(item->shift());
 		localContext.skipBorder = (rect.y() <= header + _itemsTop);
 		if (rect.intersects(clip)) {
+			const auto selection = itemSelection(item, context);
+			const auto cached = cache
+				&& (selection == TextSelection())
+				&& !localContext.selecting
+				&& !localContext.skipBorder
+				&& (item != context.hoveredItem)
+				&& !item->elementsAnimating();
 			p.translate(rect.topLeft());
-			item->paint(
-				p,
-				clip.translated(-rect.topLeft()),
-				itemSelection(item, context),
-				&localContext);
+			if (cached) {
+				const auto ratio = style::DevicePixelRatio();
+				cache->paintRow(
+					p,
+					GetLayoutCacheKey(item),
+					rect.size() * ratio,
+					ratio,
+					[&](QImage &image) {
+						image.fill(context.bg->c);
+						auto q = Painter(&image);
+						item->paint(
+							q,
+							QRect(QPoint(), rect.size()),
+							selection,
+							&localContext);
+					});
+			} else {
+				item->paint(
+					p,
+					clip.translated(-rect.topLeft()),
+					selection,
+					&localContext);
+			}
 			p.translate(-rect.topLeft());
+
+			if (_canReorder && isOneColumn()) {
+				st::stickersReorderIcon.paint(
+					p,
+					rect::right(rect) - oneColumnRightPadding(),
+					(rect.height() - st::stickersReorderIcon.height()) / 2
+						+ rect.y(),
+					outerWidth);
+			}
 		}
 	}
 }
@@ -302,16 +381,16 @@ TextSelection ListSection::itemSelection(
 		not_null<const BaseLayout*> item,
 		const ListContext &context) const {
 	const auto parent = item->getItem();
-	auto dragSelectAction = context.dragSelectAction;
+	const auto dragSelectAction = context.dragSelectAction;
 	if (dragSelectAction != ListDragSelectAction::None) {
-		auto i = context.dragSelected->find(parent);
+		const auto i = context.dragSelected->find(parent);
 		if (i != context.dragSelected->end()) {
 			return (dragSelectAction == ListDragSelectAction::Selecting)
 				? FullSelection
 				: TextSelection();
 		}
 	}
-	auto i = context.selected->find(parent);
+	const auto i = context.selected->find(parent);
 	return (i == context.selected->cend())
 		? TextSelection()
 		: i->second.text;
@@ -321,19 +400,31 @@ int ListSection::headerHeight() const {
 	return _header.isEmpty() ? 0 : st::infoMediaHeaderHeight;
 }
 
+int ListSection::oneColumnRightPadding() const {
+	return !isOneColumn()
+		? 0
+		: _canReorder
+		? st::stickersReorderIcon.width() + st::infoMediaLeft
+		: 0;
+}
+
 void ListSection::resizeToWidth(int newWidth) {
-	auto minWidth = st::infoMediaMinGridSize + st::infoMediaSkip * 2;
+	const auto gridSize = _minGridSize
+		? _minGridSize
+		: st::infoMediaMinGridSize;
+	const auto minWidth = gridSize + st::infoMediaSkip * 2;
 	if (newWidth < minWidth) {
 		return;
 	}
 
-	auto resizeOneColumn = [&](int itemsLeft, int itemWidth) {
+	const auto resizeOneColumn = [&](int itemsLeft, int itemWidth) {
+		const auto rightPadding = oneColumnRightPadding();
 		_itemsLeft = itemsLeft;
 		_itemsTop = 0;
 		_itemsInRow = 1;
-		_itemWidth = itemWidth;
+		_itemWidth = itemWidth - rightPadding;
 		for (auto &item : _items) {
-			item->resizeGetHeight(_itemWidth);
+			item->resizeGetHeight(_itemWidth - rightPadding);
 		}
 	};
 	switch (_type) {
@@ -345,7 +436,7 @@ void ListSection::resizeToWidth(int newWidth) {
 		_itemsLeft = st::infoMediaLeft;
 		_itemsTop = st::infoMediaSkip;
 		_itemsInRow = (newWidth - _itemsLeft * 2 + skip)
-			/ (st::infoMediaMinGridSize + skip);
+			/ (gridSize + skip);
 		_itemWidth = ((newWidth - _itemsLeft * 2 + skip) / _itemsInRow)
 			- st::infoMediaSkip;
 		_itemsLeft = (newWidth - (_itemWidth + skip) * _itemsInRow + skip)
@@ -365,8 +456,8 @@ void ListSection::resizeToWidth(int newWidth) {
 		break;
 	case Type::File:
 	case Type::Link: {
-		auto itemsLeft = st::infoMediaHeaderPosition.x();
-		auto itemWidth = newWidth - 2 * itemsLeft;
+		const auto itemsLeft = st::infoMediaHeaderPosition.x();
+		const auto itemWidth = newWidth - 2 * itemsLeft;
 		resizeOneColumn(itemsLeft, itemWidth);
 	} break;
 	}
@@ -382,7 +473,7 @@ int ListSection::recountHeight() {
 	case Type::Video:
 	case Type::PhotoVideo:
 	case Type::RoundFile: {
-		auto itemHeight = _itemHeight + st::infoMediaSkip;
+		const auto itemHeight = _itemHeight + st::infoMediaSkip;
 		auto index = 0;
 		result += _itemsTop;
 		for (auto &item : _items) {

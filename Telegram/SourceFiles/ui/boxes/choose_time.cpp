@@ -7,12 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ui/boxes/choose_time.h"
 
+#include "base/invoke_queued.h"
 #include "base/qt_signal_producer.h"
 #include "ui/ui_utility.h"
 #include "ui/widgets/fields/time_part_input_with_placeholder.h"
 #include "ui/wrap/padding_wrap.h"
 #include "styles/style_boxes.h"
-#include "styles/style_layers.h"
+#include "styles/style_choose_date_time.h"
 
 namespace Ui {
 
@@ -21,23 +22,33 @@ ChooseTimeResult ChooseTimeWidget(
 		TimeId startSeconds,
 		bool hiddenDaysInput) {
 	using TimeField = Ui::TimePartWithPlaceholder;
-	const auto putNext = [](not_null<TimeField*> field, QChar ch) {
+	// Focusing synchronously closes an open IME composition, which on Windows
+	// makes QWindowsInputContext::reset() re-send the commit to the field we
+	// came from, whose correctValue() calls us again, until the stack
+	// overflows. Ui::TimeInput::setFocusQueued() breaks the same loop the
+	// same way - and unlike a re-entrancy flag it still lets a chained
+	// overflow digit reach the field after the next one.
+	const auto setFocusQueued = [](not_null<TimeField*> field) {
+		const auto raw = field.get();
+		InvokeQueued(raw, [raw] { raw->setFocus(); });
+	};
+	const auto putNext = [=](not_null<TimeField*> field, QChar ch) {
 		field->setCursorPosition(0);
 		if (ch.unicode()) {
 			field->setText(ch + field->getLastText());
 			field->setCursorPosition(1);
 		}
 		field->onTextEdited();
-		field->setFocus();
+		setFocusQueued(field);
 	};
 
-	const auto erasePrevious = [](not_null<TimeField*> field) {
+	const auto erasePrevious = [=](not_null<TimeField*> field) {
 		const auto text = field->getLastText();
 		if (!text.isEmpty()) {
 			field->setCursorPosition(text.size() - 1);
 			field->setText(text.mid(0, text.size() - 1));
 		}
-		field->setFocus();
+		setFocusQueued(field);
 	};
 
 	struct State {
@@ -76,9 +87,9 @@ ChooseTimeResult ChooseTimeWidget(
 			QString::number(startMinutes)),
 	});
 
-	const auto day = Ui::MakeWeak(state->day);
-	const auto hour = Ui::MakeWeak(state->hour);
-	const auto minute = Ui::MakeWeak(state->minute);
+	const auto day = base::make_weak(state->day);
+	const auto hour = base::make_weak(state->hour);
+	const auto minute = base::make_weak(state->minute);
 
 	if (hiddenDaysInput) {
 		day->setVisible(false);
@@ -87,29 +98,29 @@ ChooseTimeResult ChooseTimeWidget(
 	day->setPhrase(tr::lng_days);
 	day->setMaxValue(31);
 	day->setWheelStep(1);
-	day->putNext() | rpl::start_with_next([=](QChar ch) {
-		putNext(hour, ch);
+	day->putNext() | rpl::on_next([=](QChar ch) {
+		putNext(hour.get(), ch);
 	}, content->lifetime());
 
 	hour->setPhrase(tr::lng_hours);
 	hour->setMaxValue(23);
 	hour->setWheelStep(1);
-	hour->putNext() | rpl::start_with_next([=](QChar ch) {
-		putNext(minute, ch);
+	hour->putNext() | rpl::on_next([=](QChar ch) {
+		putNext(minute.get(), ch);
 	}, content->lifetime());
-	hour->erasePrevious() | rpl::start_with_next([=] {
-		erasePrevious(day);
+	hour->erasePrevious() | rpl::on_next([=] {
+		erasePrevious(day.get());
 	}, content->lifetime());
 
 	minute->setPhrase(tr::lng_minutes);
 	minute->setMaxValue(59);
 	minute->setWheelStep(10);
-	minute->erasePrevious() | rpl::start_with_next([=] {
-		erasePrevious(hour);
+	minute->erasePrevious() | rpl::on_next([=] {
+		erasePrevious(hour.get());
 	}, content->lifetime());
 
 	content->sizeValue(
-	) | rpl::start_with_next([=](const QSize &s) {
+	) | rpl::on_next([=](const QSize &s) {
 		const auto inputWidth = s.width() / (hiddenDaysInput ? 2 : 3);
 		auto rect = QRect(
 			0,
@@ -127,10 +138,10 @@ ChooseTimeResult ChooseTimeWidget(
 
 	rpl::merge(
 		rpl::single(rpl::empty),
-		base::qt_signal_producer(day.data(), &MaskedInputField::changed),
-		base::qt_signal_producer(hour.data(), &MaskedInputField::changed),
-		base::qt_signal_producer(minute.data(), &MaskedInputField::changed)
-	) | rpl::start_with_next([=] {
+		base::qt_signal_producer(day.get(), &MaskedInputField::changed),
+		base::qt_signal_producer(hour.get(), &MaskedInputField::changed),
+		base::qt_signal_producer(minute.get(), &MaskedInputField::changed)
+	) | rpl::on_next([=] {
 		state->valueInSeconds = 0
 			+ day->getLastText().toUInt() * 3600 * 24
 			+ hour->getLastText().toUInt() * 3600

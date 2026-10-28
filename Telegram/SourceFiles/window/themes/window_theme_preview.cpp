@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "dialogs/dialogs_three_state_icon.h"
 #include "lang/lang_keys.h"
+#include "lottie/lottie_icon.h"
 #include "platform/platform_window_title.h"
 #include "ui/text/text_options.h"
 #include "ui/text/text_utilities.h"
@@ -19,8 +20,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_theme.h"
 #include "ui/chat/chat_style.h"
 #include "ui/chat/message_bubble.h"
+#include "styles/style_chat_style.h"
 #include "styles/style_widgets.h"
-#include "styles/style_window.h"
 #include "styles/style_media_view.h"
 #include "styles/style_chat.h"
 #include "styles/style_chat_helpers.h"
@@ -302,7 +303,9 @@ void Generator::addTextBubble(QString text, QString date, Status status) {
 	accumulate_min(width, st::msgPadding.left() + bubble.text.maxWidth() + st::msgPadding.right());
 	accumulate_min(width, st::msgMaxWidth);
 
-	auto textWidth = qMax(width - st::msgPadding.left() - st::msgPadding.right(), 1);
+	auto textWidth = std::max(
+		width - st::msgPadding.left() - st::msgPadding.right(),
+		1);
 	auto textHeight = bubble.text.countHeight(textWidth);
 
 	auto height = st::msgPadding.top() + textHeight + st::msgPadding.bottom();
@@ -331,7 +334,9 @@ void Generator::addPhotoBubble(QString image, QString caption, QString date, Sta
 	accumulate_min(width, bubble.photoWidth);
 	accumulate_min(width, st::msgMaxWidth);
 
-	auto textWidth = qMax(width - st::msgPadding.left() - st::msgPadding.right(), 1);
+	auto textWidth = std::max(
+		width - st::msgPadding.left() - st::msgPadding.right(),
+		1);
 	auto textHeight = bubble.text.countHeight(textWidth);
 
 	auto height = st::mediaCaptionSkip + textHeight + st::msgPadding.bottom();
@@ -447,7 +452,7 @@ void Generator::paintHistoryList() {
 	_historyBottom -= st::historyPaddingBottom;
 	_p->setClipping(true);
 	for (auto i = _bubbles.size(); i != 0;) {
-		auto &bubble = _bubbles[--i];
+		const auto &bubble = _bubbles[--i];
 		if (bubble.width > 0) {
 			paintBubble(bubble);
 		} else {
@@ -468,7 +473,8 @@ void Generator::paintHistoryBackground() {
 			background = Ui::ReadBackgroundImage(
 				u":/gui/art/background.tgv"_q,
 				QByteArray(),
-				true);
+				true
+			).image;
 			const auto paper = Data::DefaultWallPaper();
 			background = Ui::PreparePatternImage(
 				std::move(background),
@@ -488,12 +494,12 @@ void Generator::paintHistoryBackground() {
 	if (tiled) {
 		auto width = background.width();
 		auto height = background.height();
-		auto repeatTimesX = qCeil(_history.width()
+		auto repeatTimesX = int(std::ceil(_history.width()
 			* style::DevicePixelRatio()
-			/ float64(width));
-		auto repeatTimesY = qCeil((_history.height() - fromy)
+			/ float64(width)));
+		auto repeatTimesY = int(std::ceil((_history.height() - fromy)
 			* style::DevicePixelRatio()
-			/ float64(height));
+			/ float64(height)));
 		auto imageForTiled = QImage(
 			width * repeatTimesX,
 			height * repeatTimesY,
@@ -564,7 +570,13 @@ void Generator::paintComposeArea() {
 		: st::historyAttach.iconPosition.y();
 	st::historyAttach.icon[_palette].paint(*_p, _composeArea.x() + attachIconLeft, controlsTop + attachIconTop, _rect.width());
 	auto right = st::historySendRight + st::historySendSize.width();
-	st::historyRecordVoice[_palette].paintInCenter(*_p, QRect(_composeArea.x() + _composeArea.width() - right, controlsTop, st::historySendSize.width(), st::historySendSize.height()));
+
+	const auto recordIcon = Lottie::MakeIcon({
+		.path = u":/animations/chat/voice_to_video.tgs"_q,
+		.sizeOverride = st::historySend.recordSize,
+		.colorizeUsingAlpha = true,
+	});
+	recordIcon->paintInCenter(*_p, QRect(_composeArea.x() + _composeArea.width() - right, controlsTop, st::historySendSize.width(), st::historySendSize.height()), st::historyRecordVoiceFg[_palette]->c);
 
 	const auto &emojiButton = st::historyAttachEmoji.inner;
 	const auto emojiIconLeft = (emojiButton.iconPosition.x() < 0)
@@ -932,9 +944,11 @@ void Generator::paintBubble(const Bubble &bubble) {
 		// rescale waveform by going in waveform.size * bar_count 1D grid
 		auto active = bubble.outbg ? st::msgWaveformOutActive[_palette] : st::msgWaveformInActive[_palette];
 		auto inactive = bubble.outbg ? st::msgWaveformOutInactive[_palette] : st::msgWaveformInInactive[_palette];
-		auto wf_size = bubble.waveform.size();
+		auto wf_size = int(bubble.waveform.size());
 		auto availw = namewidth + st::msgWaveformSkip;
-		auto bar_count = qMin(availw / (st::msgWaveformBar + st::msgWaveformSkip), wf_size);
+		auto bar_count = std::min(
+			availw / (st::msgWaveformBar + st::msgWaveformSkip),
+			wf_size);
 		auto max_value = 0;
 		auto max_delta = st::msgWaveformMax - st::msgWaveformMin;
 		auto wave_bottom = y + st::msgFileLayout.padding.top() + st::msgWaveformMax;

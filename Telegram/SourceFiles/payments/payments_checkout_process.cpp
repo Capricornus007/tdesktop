@@ -19,10 +19,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/local_url_handlers.h" // TryConvertUrlToLocal.
 #include "core/file_utilities.h" // File::OpenUrl.
 #include "core/core_cloud_password.h" // Core::CloudPasswordState
+#include "core/application.h"
 #include "core/click_handler_types.h"
+#include "core/core_screenshot_protection.h"
 #include "lang/lang_keys.h"
 #include "apiwrap.h"
 #include "api/api_cloud_password.h"
+#include "webview/webview_dialog.h"
 #include "window/themes/window_theme.h"
 
 #include <QJsonDocument>
@@ -53,7 +56,7 @@ base::flat_map<not_null<Main::Session*>, SessionProcesses> Processes;
 	const auto j = Processes.emplace(session).first;
 	auto &result = j->second;
 	session->account().sessionChanges(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		Processes.erase(session);
 	}, result.lifetime);
 	return result;
@@ -254,6 +257,11 @@ std::optional<PaidInvoice> CheckoutProcess::InvoicePaid(
 }
 
 void CheckoutProcess::ClearAll() {
+	if (Webview::InsideBlockingPopup()) {
+		// See the comment in CheckoutProcess::close().
+		Webview::RunWhenBlockingPopupFinished([] { ClearAll(); });
+		return;
+	}
 	Processes.clear();
 }
 
@@ -325,17 +333,21 @@ CheckoutProcess::CheckoutProcess(
 , _reactivate(std::move(reactivate))
 , _nonPanelPaymentFormProcess(std::move(nonPanelPaymentFormProcess)) {
 	_form->updates(
-	) | rpl::start_with_next([=](const FormUpdate &update) {
+	) | rpl::on_next([=](const FormUpdate &update) {
 		handleFormUpdate(update);
 	}, _lifetime);
 
+	Core::App().screenshotProtection().addContentReason(
+		_screenshotProtection.value(),
+		_panel->lifetime());
+
 	_panel->savedMethodChosen(
-	) | rpl::start_with_next([=](QString id) {
+	) | rpl::on_next([=](QString id) {
 		_form->chooseSavedMethod(id);
 	}, _panel->lifetime());
 
 	_panel->backRequests(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		panelCancelEdit();
 	}, _panel->lifetime());
 	if (!_nonPanelPaymentFormProcess) {
@@ -345,7 +357,7 @@ CheckoutProcess::CheckoutProcess(
 
 	if (mode == Mode::Payment) {
 		_session->api().cloudPassword().state(
-		) | rpl::start_with_next([=](const Core::CloudPasswordState &state) {
+		) | rpl::on_next([=](const Core::CloudPasswordState &state) {
 			_form->setHasPassword(state.hasPassword);
 		}, _lifetime);
 	}
@@ -410,7 +422,7 @@ void CheckoutProcess::handleFormUpdate(const FormUpdate &update) {
 		UnregisterPaymentStart(this);
 		_submitState = SubmitState::Validated;
 		_panel->showWarning(data.bot->name(), data.provider->name());
-		if (const auto box = _enterPasswordBox.data()) {
+		if (const auto box = _enterPasswordBox.get()) {
 			box->closeBox();
 		}
 	}, [&](const VerificationNeeded &data) {
@@ -419,7 +431,10 @@ void CheckoutProcess::handleFormUpdate(const FormUpdate &update) {
 			rpl::single(_form->invoice().provider));
 		_sendFormFailed = false;
 		_sendFormPending = true;
-		if (!_panel->showWebview(data.url, false, std::move(bottomText))) {
+		if (!_panel->showWebview(
+				data.url,
+				Ui::WebviewMode::Verification,
+				std::move(bottomText))) {
 			File::OpenUrl(data.url);
 			close();
 		}
@@ -534,7 +549,7 @@ void CheckoutProcess::handleError(const Error &error) {
 		showToast({ "SmartGlocal Error: " + id });
 	} break;
 	case Error::Type::TmpPassword:
-		if (const auto box = _enterPasswordBox.data()) {
+		if (const auto box = _enterPasswordBox.get()) {
 			if (!box->handleCustomCheckError(id)) {
 				showToast({ "Error: Could not generate tmp password." });
 			}
@@ -542,7 +557,7 @@ void CheckoutProcess::handleError(const Error &error) {
 		break;
 	case Error::Type::Send:
 		_sendFormFailed = true;
-		if (const auto box = _enterPasswordBox.data()) {
+		if (const auto box = _enterPasswordBox.get()) {
 			box->closeBox();
 		}
 		if (_submitState == SubmitState::Finishing) {
@@ -598,6 +613,17 @@ void CheckoutProcess::closeAndReactivate(CheckoutResult result) {
 }
 
 void CheckoutProcess::close() {
+	if (Webview::InsideBlockingPopup()) {
+		// A blocking popup may have been opened from inside a webview
+		// callback, so the frames of that callback, and the closures
+		// owning them, are still on the stack below the popup. Destroying
+		// this process (and with it the panel and the webview) here would
+		// pull the ground from under them, so wait for a clean stack.
+		Webview::RunWhenBlockingPopupFinished(crl::guard(this, [=] {
+			close();
+		}));
+		return;
+	}
 	const auto i = Processes.find(_session);
 	if (i == end(Processes)) {
 		return;
@@ -681,7 +707,9 @@ void CheckoutProcess::panelAcceptTermsAndSubmit() {
 void CheckoutProcess::panelWebviewMessage(
 		const QJsonDocument &message,
 		bool saveInformation) {
-	if (!message.isArray()) {
+	if (_sendFormPending) {
+		return;
+	} else if (!message.isArray()) {
 		LOG(("Payments Error: "
 			"Not an array received in buy_callback arguments."));
 		return;
@@ -780,6 +808,7 @@ void CheckoutProcess::panelEditPhone() {
 }
 
 void CheckoutProcess::showForm() {
+	_screenshotProtection = !_form->invoice().isTest;
 	_panel->showForm(
 		_form->invoice(),
 		_form->information(),
@@ -857,7 +886,7 @@ void CheckoutProcess::requestPassword() {
 		fields.customSubmitButton = tr::lng_payments_password_submit();
 		fields.customCheckCallback = [=](
 				const Core::CloudPasswordResult &result,
-				QPointer<PasscodeBox> box) {
+				base::weak_qptr<PasscodeBox> box) {
 			_enterPasswordBox = box;
 			_form->submit(result);
 		};
@@ -878,12 +907,12 @@ void CheckoutProcess::panelSetPassword() {
 		rpl::merge(
 			box->newPasswordSet() | rpl::to_empty,
 			box->passwordReloadNeeded()
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			_session->api().cloudPassword().reload();
 		}, box->lifetime());
 
 		box->clearUnconfirmedPassword(
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			_session->api().cloudPassword().clearUnconfirmedPassword();
 		}, box->lifetime());
 
@@ -903,7 +932,7 @@ void CheckoutProcess::getPasswordState(
 		return;
 	}
 	_session->api().cloudPassword().state(
-	) | rpl::start_with_next([=](const Core::CloudPasswordState &state) {
+	) | rpl::on_next([=](const Core::CloudPasswordState &state) {
 		_gettingPasswordState.destroy();
 		callback(state);
 	}, _gettingPasswordState);

@@ -98,7 +98,7 @@ const auto kAudioItemIdentifier = @"touchbarAudio";
 		rpl::single(false) | rpl::then(Core::App().passcodeLockChanges()),
 		rpl::single(false) | rpl::then(std::move(audioPlayer)),
 		rpl::single(false) | rpl::then(std::move(voiceRecording))
-	) | rpl::start_with_next([=](
+	) | rpl::on_next([=](
 			Main::Session *session,
 			bool lock,
 			bool audio,
@@ -121,9 +121,14 @@ const auto kAudioItemIdentifier = @"touchbarAudio";
 	return self;
 }
 
+- (void)invalidate {
+	_lifetime.destroy();
+	_controller = nullptr;
+}
+
 - (NSTouchBarItem*)touchBar:(NSTouchBar*)touchBar
 		makeItemForIdentifier:(NSTouchBarItemIdentifier)itemId {
-	if (!touchBar || !_controller->sessionController()) {
+	if (!touchBar || !_controller || !_controller->sessionController()) {
 		return nil;
 	}
 	const auto isEqual = [&](NSString *string) {
@@ -148,7 +153,7 @@ const auto kAudioItemIdentifier = @"touchbarAudio";
 					? Data::CanSendAnyOf(topic, rights)
 					: (peer && Data::CanSendAnyOf(peer, rights));
 			}) | rpl::distinct_until_changed()
-		) | rpl::start_with_next([=](
+		) | rpl::on_next([=](
 				Ui::MarkdownEnabledState state,
 				bool hasActiveChat) {
 			item.groupTouchBar.defaultItemIdentifiers = @[
@@ -166,7 +171,7 @@ const auto kAudioItemIdentifier = @"touchbarAudio";
 		auto *touchBar = [[[TouchBarAudioPlayer alloc] init]
 			autorelease];
 		item.groupTouchBar = touchBar;
-		[touchBar closeRequests] | rpl::start_with_next([=] {
+		[touchBar closeRequests] | rpl::on_next([=] {
 			Media::Player::instance()->stopAndClose();
 		}, [item lifetime]);
 		return [item autorelease];

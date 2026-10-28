@@ -10,14 +10,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "api/api_cloud_password.h"
 #include "api/api_send_progress.h"
-#include "boxes/share_box.h"
-#include "boxes/passcode_box.h"
-#include "boxes/url_auth_box.h"
+#include "api/api_suggest_post.h"
 #include "boxes/peers/choose_peer_box.h"
+#include "boxes/peers/create_managed_bot_box.h"
+#include "boxes/passcode_box.h"
+#include "boxes/share_box.h"
+#include "boxes/url_auth_box.h"
 #include "lang/lang_keys.h"
 #include "chat_helpers/bot_command.h"
 #include "core/core_cloud_password.h"
 #include "core/click_handler_types.h"
+#include "data/components/ephemeral_messages.h"
 #include "data/data_changes.h"
 #include "data/data_peer.h"
 #include "data/data_poll.h"
@@ -38,7 +41,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
+#include "styles/style_chat.h"
+#include "styles/style_chat_helpers.h"
 
+#include <QtCore/QDataStream>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QClipboard>
 
@@ -48,12 +54,11 @@ namespace {
 void SendBotCallbackData(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item,
-		int row,
-		int column,
+		BotButtonLookup lookup,
 		std::optional<Core::CloudPasswordResult> password,
 		Fn<void()> done = nullptr,
 		Fn<void(const QString &)> handleError = nullptr) {
-	if (!item->isRegular()) {
+	if (!item->isRegular() && !item->isEphemeral()) {
 		return;
 	}
 	const auto history = item->history();
@@ -62,10 +67,7 @@ void SendBotCallbackData(
 	const auto api = &session->api();
 	const auto bot = item->getMessageBot();
 	const auto fullId = item->fullId();
-	const auto getButton = [=] {
-		return HistoryMessageMarkupButton::Get(owner, fullId, row, column);
-	};
-	const auto button = getButton();
+	const auto button = lookup();
 	if (!button || button->requestId) {
 		return;
 	}
@@ -86,15 +88,22 @@ void SendBotCallbackData(
 	if (withPassword) {
 		flags |= MTPmessages_GetBotCallbackAnswer::Flag::f_password;
 	}
+	const auto ephemeralId = session->ephemeralMessages().lookupId(item);
+	if (item->isEphemeral() && !ephemeralId) {
+		return;
+	} else if (ephemeralId && (isGame || withPassword)) {
+		return;
+	}
+	if (item->isEphemeral()) {
+		session->ephemeralMessages().noteCallbackTopic(
+			history,
+			item->from()->id,
+			item->topicRootId());
+	}
 	const auto weak = base::make_weak(controller);
 	const auto show = controller->uiShow();
-	button->requestId = api->request(MTPmessages_GetBotCallbackAnswer(
-		MTP_flags(flags),
-		history->peer->input,
-		MTP_int(item->id),
-		MTP_bytes(sendData),
-		password ? password->result : MTP_inputCheckPasswordEmpty()
-	)).done([=](const MTPmessages_BotCallbackAnswer &result) {
+	const auto handleDone = [=](
+			const MTPmessages_BotCallbackAnswer &result) {
 		const auto guard = gsl::finally([&] {
 			if (done) {
 				done();
@@ -104,7 +113,7 @@ void SendBotCallbackData(
 		if (!item) {
 			return;
 		}
-		if (const auto button = getButton()) {
+		if (const auto button = lookup()) {
 			button->requestId = 0;
 			owner->requestItemRepaint(item);
 		}
@@ -144,7 +153,8 @@ void SendBotCallbackData(
 		} else if (withPassword) {
 			show->hideLayer();
 		}
-	}).fail([=](const MTP::Error &error) {
+	};
+	const auto handleFail = [=](const MTP::Error &error) {
 		const auto guard = gsl::finally([&] {
 			if (handleError) {
 				handleError(error.type());
@@ -155,11 +165,27 @@ void SendBotCallbackData(
 			return;
 		}
 		// Show error?
-		if (const auto button = getButton()) {
+		if (const auto button = lookup()) {
 			button->requestId = 0;
 			owner->requestItemRepaint(item);
 		}
-	}).send();
+	};
+	button->requestId = ephemeralId
+		? api->request(MTPephemeral_GetCallbackAnswer(
+			MTP_flags(sendData.isEmpty()
+				? MTPephemeral_GetCallbackAnswer::Flag(0)
+				: MTPephemeral_GetCallbackAnswer::Flag::f_data),
+			history->peer->input(),
+			MTP_int(ephemeralId),
+			MTP_bytes(sendData)
+		)).done(handleDone).fail(handleFail).send()
+		: api->request(MTPmessages_GetBotCallbackAnswer(
+			MTP_flags(flags),
+			history->peer->input(),
+			MTP_int(item->id),
+			MTP_bytes(sendData),
+			password ? password->result : MTP_inputCheckPasswordEmpty()
+		)).done(handleDone).fail(handleFail).send();
 
 	session->changes().messageUpdated(
 		item,
@@ -178,16 +204,14 @@ void HideSingleUseKeyboard(
 void SendBotCallbackData(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item,
-		int row,
-		int column) {
-	SendBotCallbackData(controller, item, row, column, std::nullopt);
+		BotButtonLookup lookup) {
+	SendBotCallbackData(controller, item, std::move(lookup), std::nullopt);
 }
 
 void SendBotCallbackDataWithPassword(
 		not_null<Window::SessionController*> controller,
 		not_null<HistoryItem*> item,
-		int row,
-		int column) {
+		BotButtonLookup lookup) {
 	if (!item->isRegular()) {
 		return;
 	}
@@ -196,41 +220,35 @@ void SendBotCallbackDataWithPassword(
 	const auto owner = &history->owner();
 	const auto api = &session->api();
 	const auto fullId = item->fullId();
-	const auto getButton = [=] {
-		return HistoryMessageMarkupButton::Get(
-			owner,
-			fullId,
-			row,
-			column);
-	};
-	const auto button = getButton();
-	if (!button || button->requestId) {
+	if (const auto button = lookup(); !button || button->requestId) {
 		return;
 	}
 	api->cloudPassword().reload();
 	const auto weak = base::make_weak(controller);
 	const auto show = controller->uiShow();
-	SendBotCallbackData(controller, item, row, column, {}, {}, [=](
+	SendBotCallbackData(controller, item, lookup, {}, {}, [=](
 			const QString &error) {
 		auto box = PrePasswordErrorBox(
 			error,
 			session,
 			tr::lng_bots_password_confirm_check_about(
 				tr::now,
-				Ui::Text::WithEntities));
+				tr::marked));
 		if (box) {
 			show->showBox(std::move(box), Ui::LayerOption::CloseOther);
 		} else {
 			auto lifetime = std::make_shared<rpl::lifetime>();
-			button->requestId = -1;
+			if (const auto button = lookup()) {
+				button->requestId = -1;
+			}
 			api->cloudPassword().state(
 			) | rpl::take(
 				1
-			) | rpl::start_with_next([=](const Core::CloudPasswordState &state) mutable {
+			) | rpl::on_next([=](const Core::CloudPasswordState &state) mutable {
 				if (lifetime) {
 					base::take(lifetime)->destroy();
 				}
-				if (const auto button = getButton()) {
+				if (const auto button = lookup()) {
 					if (button->requestId == -1) {
 						button->requestId = 0;
 					}
@@ -244,8 +262,8 @@ void SendBotCallbackDataWithPassword(
 				fields.customSubmitButton = tr::lng_passcode_submit();
 				fields.customCheckCallback = [=](
 						const Core::CloudPasswordResult &result,
-						QPointer<PasscodeBox> box) {
-					if (const auto button = getButton()) {
+						base::weak_qptr<PasscodeBox> box) {
+					if (const auto button = lookup()) {
 						if (button->requestId) {
 							return;
 						}
@@ -257,15 +275,21 @@ void SendBotCallbackDataWithPassword(
 						if (!strongController) {
 							return;
 						}
-						SendBotCallbackData(strongController, item, row, column, result, [=] {
-							if (box) {
-								box->closeBox();
-							}
-						}, [=](const QString &error) {
-							if (box) {
-								box->handleCustomCheckError(error);
-							}
-						});
+						SendBotCallbackData(
+							strongController,
+							item,
+							lookup,
+							result,
+							[=] {
+								if (box) {
+									box->closeBox();
+								}
+							},
+							[=](const QString &error) {
+								if (box) {
+									box->handleCustomCheckError(error);
+								}
+							});
 					}
 				};
 				auto object = Box<PasscodeBox>(session, fields);
@@ -286,7 +310,7 @@ bool SwitchInlineBotButtonReceived(
 		samePeerReplyTo);
 }
 
-void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
+void ActivateBotButton(ClickHandlerContext context, BotButtonLookup lookup) {
 	const auto strong = context.sessionWindow.get();
 	if (!strong) {
 		return;
@@ -296,11 +320,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 	if (!item) {
 		return;
 	}
-	const auto button = HistoryMessageMarkupButton::Get(
-		&item->history()->owner(),
-		item->fullId(),
-		row,
-		column);
+	const auto button = lookup();
 	if (!button) {
 		return;
 	}
@@ -323,11 +343,11 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 
 	case ButtonType::Callback:
 	case ButtonType::Game: {
-		SendBotCallbackData(controller, item, row, column);
+		SendBotCallbackData(controller, item, lookup);
 	} break;
 
 	case ButtonType::CallbackWithPassword: {
-		SendBotCallbackDataWithPassword(controller, item, row, column);
+		SendBotCallbackDataWithPassword(controller, item, lookup);
 	} break;
 
 	case ButtonType::Buy: {
@@ -390,7 +410,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 
 	case ButtonType::RequestPoll: {
 		HideSingleUseKeyboard(controller, item);
-		auto chosen = PollData::Flags();
+		auto chosen = kDefaultPollCreateFlags;
 		auto disabled = PollData::Flags();
 		if (!button->data.isEmpty()) {
 			disabled |= PollData::Flag::Quiz;
@@ -399,10 +419,12 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 			}
 		}
 		const auto replyTo = FullReplyTo();
+		const auto suggest = SuggestOptions();
 		Window::PeerMenuCreatePoll(
 			controller,
 			item->history()->peer,
 			replyTo,
+			suggest,
 			chosen,
 			disabled);
 	} break;
@@ -417,14 +439,17 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 		const auto itemId = item->id;
 		const auto id = int32(button->buttonId);
 		const auto chosen = [=](std::vector<not_null<PeerData*>> result) {
+			using Flag = MTPmessages_SendBotRequestedPeer::Flag;
 			peer->session().api().request(MTPmessages_SendBotRequestedPeer(
-				peer->input,
+				MTP_flags(Flag::f_msg_id),
+				peer->input(),
 				MTP_int(itemId),
+				MTPstring(), // request_id
 				MTP_int(id),
 				MTP_vector_from_range(
 					result | ranges::views::transform([](
 							not_null<PeerData*> peer) {
-						return MTPInputPeer(peer->input);
+						return MTPInputPeer(peer->input());
 					}))
 			)).done([=](const MTPUpdates &result) {
 				peer->session().api().applyUpdates(result);
@@ -479,7 +504,7 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 	} break;
 
 	case ButtonType::Auth:
-		UrlAuthBox::Activate(item, row, column);
+		UrlAuthBox::ActivateButton(controller->uiShow(), item, lookup);
 		break;
 
 	case ButtonType::UserProfile: {
@@ -516,10 +541,125 @@ void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
 		const auto text = QString::fromUtf8(button->data);
 		if (!text.isEmpty()) {
 			QGuiApplication::clipboard()->setText(text);
-			controller->showToast(tr::lng_text_copied(tr::now));
+			controller->showToast({
+				.text = { tr::lng_text_copied(tr::now) },
+				.iconLottie = u"toast/copy"_q,
+				.iconLottieSize = st::toastLottieIconSize,
+			});
 		}
 	} break;
+
+	case ButtonType::Disabled: break;
+
+	case ButtonType::SuggestAccept: {
+		Api::AcceptClickHandler(item)->onClick(ClickContext{
+			Qt::LeftButton,
+			QVariant::fromValue(context),
+		});
+	} break;
+
+	case ButtonType::SuggestDecline: {
+		Api::DeclineClickHandler(item)->onClick(ClickContext{
+			Qt::LeftButton,
+			QVariant::fromValue(context),
+		});
+	} break;
+
+	case ButtonType::SuggestChange: {
+		Api::SuggestChangesClickHandler(item)->onClick(ClickContext{
+			Qt::LeftButton,
+			QVariant::fromValue(context),
+		});
+	} break;
+
+	case ButtonType::CreateBot: {
+		HideSingleUseKeyboard(controller, item);
+
+		auto suggestedName = QString();
+		auto suggestedUsername = QString();
+		{
+			auto stream = QDataStream(button->data);
+			stream >> suggestedName >> suggestedUsername;
+		}
+		const auto peer = item->history()->peer;
+		const auto itemId = item->id;
+		const auto id = int32(button->buttonId);
+		const auto bot = item->getMessageBot();
+		if (!bot) {
+			break;
+		}
+		ShowCreateManagedBotBox({
+			.show = controller->uiShow(),
+			.manager = bot,
+			.suggestedName = suggestedName,
+			.suggestedUsername = suggestedUsername,
+			.done = [=](not_null<UserData*> createdBot) {
+				using Flag = MTPmessages_SendBotRequestedPeer::Flag;
+				peer->session().api().request(
+					MTPmessages_SendBotRequestedPeer(
+						MTP_flags(Flag::f_msg_id),
+						peer->input(),
+						MTP_int(itemId),
+						MTPstring(),
+						MTP_int(id),
+						MTP_vector<MTPInputPeer>(
+							1,
+							createdBot->input()))
+				).done([=](const MTPUpdates &result) {
+					peer->session().api().applyUpdates(result);
+				}).send();
+				controller->showPeerHistory(createdBot);
+				controller->showToast({
+					.title = tr::lng_managed_bot_created_title(
+						tr::now,
+						lt_name,
+						createdBot->name()),
+					.text = { tr::lng_managed_bot_created_text(
+						tr::now,
+						lt_parent_name,
+						bot->name()) },
+					.icon = &st::toastCheckIcon,
+				});
+			},
+		});
+	} break;
 	}
+}
+
+void ActivateBotCommand(ClickHandlerContext context, int row, int column) {
+	const auto strong = context.sessionWindow.get();
+	if (!strong) {
+		return;
+	}
+	const auto owner = &strong->session().data();
+	const auto itemId = context.itemId;
+	ActivateBotButton(context, [=] {
+		return HistoryMessageMarkupButton::Get(owner, itemId, row, column);
+	});
+}
+
+void ActivateRichPageBotButton(
+		ClickHandlerContext context,
+		const HistoryMessageMarkupButton &button) {
+	const auto strong = context.sessionWindow.get();
+	if (!strong) {
+		return;
+	}
+	const auto owner = &strong->session().data();
+	const auto itemId = context.itemId;
+	const auto key = HistoryMessageMarkupButton::RegisterRichPageButton(
+		owner,
+		itemId,
+		button);
+	if (key.isEmpty()) {
+		return;
+	}
+	ActivateBotButton(context, [=] {
+		return HistoryMessageMarkupButton::GetRichPageButton(
+			owner,
+			itemId,
+			key);
+	});
 }
 
 } // namespace Api

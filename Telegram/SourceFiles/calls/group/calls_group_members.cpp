@@ -82,6 +82,9 @@ public:
 	[[nodiscard]] rpl::producer<VolumeRequest> changeVolumeRequests() const;
 	[[nodiscard]] auto kickParticipantRequests() const
 		-> rpl::producer<not_null<PeerData*>>;
+	[[nodiscard]] rpl::producer<not_null<Row*>> rowRemoved() const {
+		return _rowRemoved.events();
+	}
 
 	Row *findRow(not_null<PeerData*> participantPeer) const;
 	void setMode(PanelMode mode);
@@ -189,6 +192,7 @@ private:
 	rpl::event_stream<MuteRequest> _toggleMuteRequests;
 	rpl::event_stream<VolumeRequest> _changeVolumeRequests;
 	rpl::event_stream<not_null<PeerData*>> _kickParticipantRequests;
+	rpl::event_stream<not_null<Row*>> _rowRemoved;
 	rpl::variable<int> _fullCount = 1;
 
 	not_null<QWidget*> _menuParent;
@@ -241,7 +245,7 @@ Members::Controller::Controller(
 	st::groupCallMembersBgOver)
 , _narrowRoundRect(ImageRoundRadius::Large, st::groupCallMembersBg) {
 	style::PaletteChanged(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		_inactiveCrossLine.invalidate();
 		_coloredCrossLine.invalidate();
 		_inactiveNarrowCrossLine.invalidate();
@@ -251,7 +255,7 @@ Members::Controller::Controller(
 	rpl::combine(
 		PowerSaving::OnValue(PowerSaving::kCalls),
 		Core::App().appDeactivatedValue()
-	) | rpl::start_with_next([=](bool disabled, bool deactivated) {
+	) | rpl::on_next([=](bool disabled, bool deactivated) {
 		const auto hide = disabled || deactivated;
 
 		if (!(hide && _soundingAnimationHideLastTime)) {
@@ -284,7 +288,7 @@ Members::Controller::Controller(
 
 	_peer->session().changes().peerUpdates(
 		Data::PeerUpdate::Flag::About
-	) | rpl::start_with_next([=](const Data::PeerUpdate &update) {
+	) | rpl::on_next([=](const Data::PeerUpdate &update) {
 		if (const auto row = findRow(update.peer)) {
 			row->setAbout(update.peer->about());
 		}
@@ -297,12 +301,12 @@ Members::Controller::~Controller() {
 
 void Members::Controller::setupListChangeViewers() {
 	_call->real(
-	) | rpl::start_with_next([=](not_null<Data::GroupCall*> real) {
+	) | rpl::on_next([=](not_null<Data::GroupCall*> real) {
 		subscribeToChanges(real);
 	}, _lifetime);
 
 	_call->levelUpdates(
-	) | rpl::start_with_next([=](const LevelUpdate &update) {
+	) | rpl::on_next([=](const LevelUpdate &update) {
 		const auto i = _soundingRowBySsrc.find(update.ssrc);
 		if (i != end(_soundingRowBySsrc)) {
 			updateRowLevel(i->second, update.value);
@@ -310,7 +314,7 @@ void Members::Controller::setupListChangeViewers() {
 	}, _lifetime);
 
 	_call->videoEndpointLargeValue(
-	) | rpl::start_with_next([=](const VideoEndpoint &large) {
+	) | rpl::on_next([=](const VideoEndpoint &large) {
 		if (large) {
 			hideRowsWithVideoExcept(large);
 		} else {
@@ -322,7 +326,7 @@ void Members::Controller::setupListChangeViewers() {
 	) | rpl::filter([=](const VideoStateToggle &update) {
 		const auto &large = _call->videoEndpointLarge();
 		return large && (update.endpoint != large);
-	}) | rpl::start_with_next([=](const VideoStateToggle &update) {
+	}) | rpl::on_next([=](const VideoStateToggle &update) {
 		if (update.value) {
 			hideRowWithVideo(update.endpoint);
 		} else {
@@ -331,7 +335,7 @@ void Members::Controller::setupListChangeViewers() {
 	}, _lifetime);
 
 	_call->rejoinEvents(
-	) | rpl::start_with_next([=](const Group::RejoinEvent &event) {
+	) | rpl::on_next([=](const Group::RejoinEvent &event) {
 		const auto guard = gsl::finally([&] {
 			delegate()->peerListRefreshRows();
 		});
@@ -411,13 +415,13 @@ void Members::Controller::subscribeToChanges(not_null<Data::GroupCall*> real) {
 	_fullCount = real->fullCountValue();
 
 	real->participantsReloaded(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		prepareRows(real);
 	}, _lifetime);
 
 	using Update = Data::GroupCall::ParticipantUpdate;
 	real->participantUpdated(
-	) | rpl::start_with_next([=](const Update &update) {
+	) | rpl::on_next([=](const Update &update) {
 		Expects(update.was.has_value() || update.now.has_value());
 
 		const auto participantPeer = update.was
@@ -444,7 +448,7 @@ void Members::Controller::subscribeToChanges(not_null<Data::GroupCall*> real) {
 		toggleVideoEndpointActive(endpoint, true);
 	}
 	_call->videoStreamActiveUpdates(
-	) | rpl::start_with_next([=](const VideoStateToggle &update) {
+	) | rpl::on_next([=](const VideoStateToggle &update) {
 		toggleVideoEndpointActive(update.endpoint, update.value);
 	}, _lifetime);
 }
@@ -516,7 +520,7 @@ void Members::Controller::setupInvitedUsers() {
 	_peer->owner().invitesToCalls(
 	) | rpl::filter([=](const Invite &invite) {
 		return (invite.id == _call->id());
-	}) | rpl::start_with_next([=](const Invite &invite) {
+	}) | rpl::on_next([=](const Invite &invite) {
 		const auto user = invite.user;
 		if (invite.removed) {
 			if (const auto row = findRow(user)) {
@@ -545,12 +549,12 @@ bool Members::Controller::appendWithAccessUsers() {
 }
 
 void Members::Controller::setupWithAccessUsers() {
-	const auto conference = _call->conferenceCall().get();
-	if (!conference) {
+	const auto conference = _call->sharedCall().get();
+	if (!_call->conference() || !conference) {
 		return;
 	}
 	conference->participantsWithAccessValue(
-	) | rpl::start_with_next([=](base::flat_set<UserId> &&nowIds) {
+	) | rpl::on_next([=](base::flat_set<UserId> &&nowIds) {
 		for (auto i = begin(_withAccess); i != end(_withAccess);) {
 			const auto oldId = *i;
 			if (nowIds.remove(oldId)) {
@@ -888,6 +892,7 @@ void Members::Controller::updateRowInSoundingMap(
 
 void Members::Controller::removeRow(not_null<Row*> row) {
 	removeRowFromSoundingMap(row);
+	_rowRemoved.fire_copy(row);
 	delegate()->peerListRemoveRow(row);
 }
 
@@ -1333,7 +1338,7 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 	}
 	const auto muted = (muteState == Row::State::Muted)
 		|| (muteState == Row::State::RaisedHand);
-	const auto addCover = !_call->rtmp();
+	const auto addCover = !_call->rtmp() && !_call->videoStream();
 	const auto addVolumeItem = (!muted || isMe(participantPeer));
 	const auto admin = IsGroupCallAdmin(_peer, participantPeer);
 	const auto session = &_peer->session();
@@ -1346,16 +1351,16 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 			: addVolumeItem
 			? st::groupCallPopupMenuWithVolume
 			: st::groupCallPopupMenu));
-	const auto weakMenu = Ui::MakeWeak(result.get());
+	const auto weakMenu = base::make_weak(result.get());
 	const auto withActiveWindow = [=](auto callback) {
 		if (const auto window = Core::App().activePrimaryWindow()) {
-			if (const auto menu = weakMenu.data()) {
+			if (const auto menu = weakMenu.get()) {
 				menu->discardParentReActivate();
 
 				// We must hide PopupMenu before we activate the MainWindow,
 				// otherwise we set focus in field inside MainWindow and then
 				// PopupMenu::hide activates back the group call panel :(
-				delete weakMenu;
+				delete weakMenu.get();
 			}
 			window->invokeForSessionController(
 				account,
@@ -1452,7 +1457,7 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 			}
 		}
 
-		if (_call->rtmp()) {
+		if (_call->rtmp() || _call->videoStream()) {
 			addMuteActionsToContextMenu(
 				result,
 				row->peer(),
@@ -1484,8 +1489,9 @@ base::unique_qptr<Ui::PopupMenu> Members::Controller::createRowContextMenu(
 	} else {
 		const auto invited = (muteState == Row::State::Invited)
 			|| (muteState == Row::State::Calling);
-		const auto conference = _call->conferenceCall().get();
-		if (conference
+		const auto conference = _call->sharedCall().get();
+		if (_call->conference()
+			&& conference
 			&& participantPeer->isUser()
 			&& invited) {
 			const auto id = conference->id();
@@ -1586,7 +1592,7 @@ void Members::Controller::addMuteActionsToContextMenu(
 		|| (muteState == Row::State::RaisedHand);
 	const auto mutedByMe = row->mutedByMe();
 
-	auto mutesFromVolume = rpl::never<bool>() | rpl::type_erased();
+	auto mutesFromVolume = rpl::never<bool>() | rpl::type_erased;
 
 	const auto addVolumeItem = (!muted || isMe(participantPeer));
 	if (addVolumeItem) {
@@ -1609,7 +1615,7 @@ void Members::Controller::addMuteActionsToContextMenu(
 		mutesFromVolume = volumeItem->toggleMuteRequests();
 
 		volumeItem->toggleMuteRequests(
-		) | rpl::start_with_next([=](bool muted) {
+		) | rpl::on_next([=](bool muted) {
 			if (muted) {
 				// Slider value is changed after the callback is called.
 				// To capture good state inside the slider frame we postpone.
@@ -1621,19 +1627,19 @@ void Members::Controller::addMuteActionsToContextMenu(
 		}, volumeItem->lifetime());
 
 		volumeItem->toggleMuteLocallyRequests(
-		) | rpl::start_with_next([=](bool muted) {
+		) | rpl::on_next([=](bool muted) {
 			if (!isMe(participantPeer)) {
 				toggleMute(muted, true);
 			}
 		}, volumeItem->lifetime());
 
 		volumeItem->changeVolumeRequests(
-		) | rpl::start_with_next([=](int volume) {
+		) | rpl::on_next([=](int volume) {
 			changeVolume(volume, false);
 		}, volumeItem->lifetime());
 
 		volumeItem->changeVolumeLocallyRequests(
-		) | rpl::start_with_next([=](int volume) {
+		) | rpl::on_next([=](int volume) {
 			if (!isMe(participantPeer)) {
 				changeVolume(volume, true);
 			}
@@ -1645,7 +1651,9 @@ void Members::Controller::addMuteActionsToContextMenu(
 
 		menu->addAction(std::move(volumeItem));
 
-		if (!_call->rtmp() && !isMe(participantPeer)) {
+		if (!_call->rtmp()
+			&& !_call->videoStream()
+			&& !isMe(participantPeer)) {
 			menu->addSeparator();
 		}
 	};
@@ -1655,6 +1663,7 @@ void Members::Controller::addMuteActionsToContextMenu(
 			|| muteState == Row::State::Calling
 			|| muteState == Row::State::WithAccess
 			|| _call->rtmp()
+			|| _call->videoStream()
 			|| isMe(participantPeer)
 			|| (muteState == Row::State::Inactive
 				&& participantIsCallAdmin
@@ -1676,7 +1685,7 @@ void Members::Controller::addMuteActionsToContextMenu(
 	if (muteAction) {
 		std::move(
 			mutesFromVolume
-		) | rpl::start_with_next([=](bool mutedFromVolume) {
+		) | rpl::on_next([=](bool mutedFromVolume) {
 			const auto state = _call->canManage()
 				? (mutedFromVolume
 					? (row->raisedHandRating()
@@ -1821,24 +1830,24 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 	const auto conference = call->conference();
 	const auto canAddByPeer = [=](not_null<PeerData*> peer) {
 		if (conference) {
-			return rpl::single(true) | rpl::type_erased();
+			return rpl::single(true) | rpl::type_erased;
 		} else if (peer->isBroadcast()) {
-			return rpl::single(false) | rpl::type_erased();
+			return rpl::single(false) | rpl::type_erased;
 		}
 		return rpl::combine(
 			Data::CanSendValue(peer, ChatRestriction::SendOther, false),
 			_call->joinAsValue()
 		) | rpl::map([=](bool can, not_null<PeerData*> joinAs) {
 			return can && joinAs->isSelf();
-		}) | rpl::type_erased();
+		}) | rpl::type_erased;
 	};
 	const auto canInviteByLinkByPeer = [=](not_null<PeerData*> peer) {
 		if (conference) {
-			return rpl::single(true) | rpl::type_erased();
+			return rpl::single(true) | rpl::type_erased;
 		}
 		const auto channel = peer->asChannel();
 		if (!channel) {
-			return rpl::single(false) | rpl::type_erased();
+			return rpl::single(false) | rpl::type_erased;
 		}
 		return rpl::single(
 			false
@@ -1847,7 +1856,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 			return Data::PeerFlagValue(
 				channel,
 				ChannelDataFlag::Username);
-		}) | rpl::flatten_latest()) | rpl::type_erased();
+		}) | rpl::flatten_latest()) | rpl::type_erased;
 	};
 	_canAddMembers = canAddByPeer(peer);
 	_canInviteByLink = canInviteByLinkByPeer(peer);
@@ -1865,7 +1874,7 @@ void Members::setupAddMember(not_null<GroupCall*> call) {
 		_canAddMembers.value(),
 		_canInviteByLink.value(),
 		_mode.value()
-	) | rpl::start_with_next([=](bool add, bool invite, PanelMode mode) {
+	) | rpl::on_next([=](bool add, bool invite, PanelMode mode) {
 		if (!add && !invite) {
 			if (const auto old = _addMemberButton.current()) {
 				delete old;
@@ -1926,6 +1935,10 @@ not_null<MembersRow*> Members::rtmpFakeRow(not_null<PeerData*> peer) const {
 	return _rtmpFakeRow.get();
 }
 
+rpl::producer<not_null<MembersRow*>> Members::rowRemoved() const {
+	return _listController->rowRemoved();
+}
+
 void Members::setMode(PanelMode mode) {
 	if (_mode.current() == mode) {
 		return;
@@ -1958,7 +1971,7 @@ void Members::setupList() {
 				_layout.get(),
 				st::groupCallMembersTopSkip));
 		result->paintRequest(
-		) | rpl::start_with_next([=](QRect clip) {
+		) | rpl::on_next([=](QRect clip) {
 			QPainter(result).fillRect(clip, st::groupCallMembersBg);
 		}, result->lifetime());
 		return result;
@@ -1975,7 +1988,7 @@ void Members::setupList() {
 		_list->heightValue() | rpl::map(_1 > 0),
 		_addMemberButton.value() | rpl::map(_1 != nullptr)
 	) | rpl::distinct_until_changed(
-	) | rpl::start_with_next([=](bool hasList, bool hasAddMembers) {
+	) | rpl::on_next([=](bool hasList, bool hasAddMembers) {
 		_topSkip->resize(
 			_topSkip->width(),
 			hasList ? st::groupCallMembersTopSkip : 0);
@@ -1986,7 +1999,7 @@ void Members::setupList() {
 
 	const auto skip = _layout->add(object_ptr<Ui::RpWidget>(_layout.get()));
 	_mode.value(
-	) | rpl::start_with_next([=](PanelMode mode) {
+	) | rpl::on_next([=](PanelMode mode) {
 		skip->resize(skip->width(), (mode == PanelMode::Default)
 			? st::groupCallMembersBottomSkip
 			: 0);
@@ -1995,14 +2008,14 @@ void Members::setupList() {
 	rpl::combine(
 		_mode.value(),
 		_layout->heightValue()
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		resizeToList();
 	}, _layout->lifetime());
 
 	rpl::combine(
 		_scroll->scrollTopValue(),
 		_scroll->heightValue()
-	) | rpl::start_with_next([=](int scrollTop, int scrollHeight) {
+	) | rpl::on_next([=](int scrollTop, int scrollHeight) {
 		_layout->setVisibleTopBottom(scrollTop, scrollTop + scrollHeight);
 	}, _scroll->lifetime());
 }
@@ -2026,7 +2039,7 @@ void Members::setupFingerprint() {
 
 void Members::trackViewportGeometry() {
 	_call->videoEndpointLargeValue(
-	) | rpl::start_with_next([=](const VideoEndpoint &large) {
+	) | rpl::on_next([=](const VideoEndpoint &large) {
 		_viewport->showLarge(large);
 	}, _viewport->lifetime());
 
@@ -2049,19 +2062,19 @@ void Members::trackViewportGeometry() {
 			std::min(_scroll->height(), _viewport->fullHeight()));
 	};
 	_layout->widthValue(
-	) | rpl::start_with_next([=](int width) {
+	) | rpl::on_next([=](int width) {
 		_viewport->resizeToWidth(width);
 		resize();
 	}, _viewport->lifetime());
 
 	_scroll->heightValue(
-	) | rpl::skip(1) | rpl::start_with_next(resize, _viewport->lifetime());
+	) | rpl::skip(1) | rpl::on_next(resize, _viewport->lifetime());
 
 	_scroll->scrollTopValue(
-	) | rpl::skip(1) | rpl::start_with_next(move, _viewport->lifetime());
+	) | rpl::skip(1) | rpl::on_next(move, _viewport->lifetime());
 
 	_viewport->fullHeightValue(
-	) | rpl::start_with_next([=](int viewport) {
+	) | rpl::on_next([=](int viewport) {
 		_videoWrap->resize(_videoWrap->width(), viewport);
 		if (viewport > 0) {
 			move();
@@ -2120,7 +2133,7 @@ void Members::setupFakeRoundCorners() {
 		result->resize(size, size);
 		result->setAttribute(Qt::WA_TransparentForMouseEvents);
 		result->paintRequest(
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			QPainter(result).drawImage(
 				result->rect(),
 				*image,
@@ -2150,7 +2163,7 @@ void Members::setupFakeRoundCorners() {
 		_shareLinkButton.value() | rpl::map(
 			heightValue
 		) | rpl::flatten_latest()
-	) | rpl::start_with_next([=](QRect list, int addMembers, int shareLink) {
+	) | rpl::on_next([=](QRect list, int addMembers, int shareLink) {
 		const auto left = list.x();
 		const auto top = list.y() - _topSkip->height();
 		const auto right = left + list.width() - topright->width();
@@ -2169,7 +2182,7 @@ void Members::setupFakeRoundCorners() {
 
 	refreshImage();
 	style::PaletteChanged(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		refreshImage();
 		topleft->update();
 		topright->update();

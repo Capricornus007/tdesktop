@@ -8,8 +8,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/qt/qt_compare.h"
+#include "core/credits_amount.h"
 #include "data/data_peer_id.h"
 #include "ui/text/text_entity.h"
+
+#ifdef _DEBUG
+#include <QtCore/QDebug>
+#endif // _DEBUG
 
 struct MsgId {
 	constexpr MsgId() noexcept = default;
@@ -80,6 +85,7 @@ constexpr auto EndStoryMsgId = MsgId(StartStoryMsgId.bare + StoryMsgIds);
 constexpr auto ServerMaxMsgId = MsgId(1LL << 56);
 constexpr auto ScheduledMaxMsgId = MsgId(ServerMaxMsgId + (1LL << 32));
 constexpr auto ShortcutMaxMsgId = MsgId(ScheduledMaxMsgId + (1LL << 32));
+constexpr auto WelcomeMaxMsgId = MsgId(ShortcutMaxMsgId + (1LL << 32));
 constexpr auto ShowAtUnreadMsgId = MsgId(0);
 
 constexpr auto SpecialMsgIdShift = EndStoryMsgId.bare;
@@ -107,7 +113,7 @@ static_assert(-(SpecialMsgIdShift + 0xFF) > ServerMaxMsgId);
 	return MsgId(StartClientMsgId.bare + index);
 }
 
-[[nodiscrd]] constexpr inline bool IsStoryMsgId(MsgId id) noexcept {
+[[nodiscard]] constexpr inline bool IsStoryMsgId(MsgId id) noexcept {
 	return (id >= StartStoryMsgId && id < EndStoryMsgId);
 }
 [[nodiscard]] constexpr inline StoryId StoryIdFromMsgId(MsgId id) noexcept {
@@ -172,21 +178,68 @@ inline QDebug operator<<(QDebug debug, const FullMsgId &fullMsgId) {
 
 Q_DECLARE_METATYPE(FullMsgId);
 
+struct MessageHighlightId {
+	TextWithEntities quote;
+	int quoteOffset = 0;
+	int todoItemId = 0;
+	QByteArray pollOption;
+
+	[[nodiscard]] bool empty() const {
+		return quote.empty() && !todoItemId && pollOption.isEmpty();
+	}
+	[[nodiscard]] friend inline bool operator==(
+		const MessageHighlightId &a,
+		const MessageHighlightId &b) = default;
+};
+
 struct FullReplyTo {
 	FullMsgId messageId;
 	TextWithEntities quote;
 	FullStoryId storyId;
 	MsgId topicRootId = 0;
+	PeerId monoforumPeerId = 0;
 	int quoteOffset = 0;
+	int todoItemId = 0;
+	QByteArray pollOption;
 
-	[[nodiscard]] bool valid() const {
+	[[nodiscard]] MessageHighlightId highlight() const {
+		return { quote, quoteOffset, todoItemId, pollOption };
+	}
+	[[nodiscard]] bool replying() const {
 		return messageId || (storyId && storyId.peer);
 	}
 	explicit operator bool() const {
-		return valid();
+		return replying() || monoforumPeerId;
 	}
 	friend inline auto operator<=>(FullReplyTo, FullReplyTo) = default;
 	friend inline bool operator==(FullReplyTo, FullReplyTo) = default;
+};
+
+struct SuggestOptions {
+	uint32 exists : 1 = 0;
+	uint32 priceWhole : 31 = 0;
+	uint32 priceNano : 31 = 0;
+	uint32 ton : 1 = 0;
+	TimeId date = 0;
+	TimeId offerDuration = 0;
+
+	[[nodiscard]] CreditsAmount price() const {
+		return CreditsAmount(
+			priceWhole,
+			priceNano,
+			ton ? CreditsType::Ton : CreditsType::Stars);
+	}
+
+	explicit operator bool() const {
+		return exists != 0;
+	}
+
+	friend inline auto operator<=>(
+		SuggestOptions,
+		SuggestOptions) = default;
+	friend inline bool operator==(
+		SuggestOptions,
+		SuggestOptions) = default;
 };
 
 struct GlobalMsgId {

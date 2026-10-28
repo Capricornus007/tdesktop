@@ -44,6 +44,7 @@ public:
 	explicit Helper(not_null<Main::Session*> session);
 
 	static std::unique_ptr<Helper> Create(not_null<Main::Session*> session);
+	static void CheckIfLost(not_null<Window::SessionController*> controller);
 
 	void registerWindow(not_null<Window::SessionController*> controller);
 	void cloudDraftChanged(not_null<History*> history);
@@ -92,6 +93,8 @@ private:
 		TextWithEntities text,
 		Fn<void(bool success)> done);
 
+	static bool ShouldUse(not_null<Main::Session*> session);
+
 	const not_null<Main::Session*> _session;
 	MTP::Sender _api;
 	Templates _templates;
@@ -135,9 +138,5 @@ private:
 };
 
 QString ChatOccupiedString(not_null<History*> history);
-
-QString InterpretSendPath(
-	not_null<Window::SessionController*> window,
-	const QString &path);
 
 } // namespace Support

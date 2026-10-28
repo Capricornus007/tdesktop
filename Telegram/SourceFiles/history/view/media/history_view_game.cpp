@@ -108,7 +108,9 @@ QSize Game::countOptimalSize() {
 	auto titleMinHeight = _title.isEmpty() ? 0 : lineHeight;
 	// enable any count of lines in game description / message
 	auto descMaxLines = 4096;
-	auto descriptionMinHeight = _description.isEmpty() ? 0 : qMin(_description.minHeight(), descMaxLines * lineHeight);
+	auto descriptionMinHeight = _description.isEmpty()
+		? 0
+		: std::min(_description.minHeight(), descMaxLines * lineHeight);
 
 	if (!_title.isEmpty()) {
 		accumulate_max(maxWidth, _title.maxWidth());
@@ -124,10 +126,9 @@ QSize Game::countOptimalSize() {
 
 		_attach->initDimensions();
 		QMargins bubble(_attach->bubbleMargins());
-		auto maxMediaWidth = _attach->maxWidth() - bubble.left() - bubble.right();
-		if (isBubbleBottom() && _attach->customInfoLayout()) {
-			maxMediaWidth += skipBlockWidth;
-		}
+		const auto maxMediaWidth = _attach->maxWidth()
+			- bubble.left()
+			- bubble.right();
 		accumulate_max(maxWidth, maxMediaWidth);
 		minHeight += _attach->minHeight() - bubble.top() - bubble.bottom();
 	}
@@ -221,12 +222,19 @@ void Game::draw(Painter &p, const PaintContext &context) const {
 	auto inner = outer.marginsRemoved(innerMargin());
 	auto tshift = inner.top();
 	auto paintw = inner.width();
-
-	const auto colorIndex = parent()->contentColorIndex();
 	const auto selected = context.selected();
-	const auto cache = context.outbg
-		? stm->replyCache[st->colorPatternIndex(colorIndex)].get()
-		: st->coloredReplyCache(selected, colorIndex).get();
+	const auto colorIndex = parent()->contentColorIndex();
+	const auto &colorCollectible = parent()->contentColorCollectible();
+	const auto colorPattern = colorCollectible
+		? st->collectiblePatternIndex(colorCollectible)
+		: st->colorPatternIndex(colorIndex);
+	const auto useColorCollectible = colorCollectible && !context.outbg;
+	const auto useColorIndex = !context.outbg;
+	const auto cache = useColorCollectible
+		? st->collectibleReplyCache(selected, colorCollectible).get()
+		: useColorIndex
+		? st->coloredReplyCache(selected, colorIndex).get()
+		: stm->replyCache[colorPattern].get();
 	Ui::Text::ValidateQuotePaintCache(*cache, _st);
 	Ui::Text::FillQuotePaint(p, outer, *cache, _st);
 
@@ -240,9 +248,11 @@ void Game::draw(Painter &p, const PaintContext &context) const {
 	auto lineHeight = UnitedLineHeight();
 	if (_titleLines) {
 		p.setPen(cache->icon);
-		p.setTextPalette(context.outbg
-			? stm->semiboldPalette
-			: st->coloredTextPalette(selected, colorIndex));
+		p.setTextPalette(useColorCollectible
+			? st->collectibleTextPalette(selected, colorCollectible)
+			: useColorIndex
+			? st->coloredTextPalette(selected, colorIndex)
+			: stm->semiboldPalette);
 
 		auto endskip = 0;
 		if (_title.hasSkipBlock()) {

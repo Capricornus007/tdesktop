@@ -23,10 +23,14 @@ public:
 	[[nodiscard]] rpl::producer<QString> codeChanged() const {
 		return _codeChanged.events();
 	}
+	[[nodiscard]] rpl::producer<> spacePressed() const {
+		return _spacePressed.events();
+	}
 
 	void codeSelected(const QString &code);
 
 protected:
+	void keyPressEvent(QKeyEvent *e) override;
 	void correctValue(
 		const QString &was,
 		int wasCursor,
@@ -37,6 +41,7 @@ private:
 	bool _nosignal = false;
 	rpl::event_stream<QString> _addedToNumber;
 	rpl::event_stream<QString> _codeChanged;
+	rpl::event_stream<> _spacePressed;
 
 };
 
@@ -76,6 +81,7 @@ private:
 	QString _additionalPlaceholder;
 	rpl::event_stream<not_null<QKeyEvent*>> _frontBackspaceEvent;
 	GroupsCallback _groupsCallback;
+	bool _addingToNumber = false;
 
 };
 
@@ -89,6 +95,7 @@ public:
 		const QString &linkPlaceholder);
 
 	void setLinkPlaceholder(const QString &placeholder);
+	void setMaxLength(int maxLength);
 
 protected:
 	void correctValue(
@@ -100,6 +107,7 @@ protected:
 
 private:
 	QString _linkPlaceholder;
+	int _maxLength = 0;
 
 };
 

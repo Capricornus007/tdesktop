@@ -13,26 +13,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/sandbox.h"
 #include "core/application.h"
 #include "core/core_settings.h"
+#include "core/version.h"
 #include "core/crash_reports.h"
+#include "menu/menu_dock.h"
 #include "storage/localstorage.h"
 #include "media/audio/media_audio.h"
-#include "media/player/media_player_instance.h"
 #include "window/window_controller.h"
 #include "base/platform/mac/base_utilities_mac.h"
 #include "base/platform/base_platform_info.h"
-#include "lang/lang_keys.h"
 #include "base/timer.h"
 #include "styles/style_window.h"
 #include "platform/platform_specific.h"
 
 #include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QMenu>
 #if __has_include(<QtCore/QOperatingSystemVersion>)
 #include <QtCore/QOperatingSystemVersion>
 #endif // __has_include(<QtCore/QOperatingSystemVersion>)
-#if QT_VERSION < QT_VERSION_CHECK(6, 6, 0)
-#include <qpa/qwindowsysteminterface.h>
-#endif // Qt < 6.6.0
 #include <Cocoa/Cocoa.h>
 #include <CoreFoundation/CFURL.h>
 #include <IOKit/IOKitLib.h>
@@ -45,46 +43,15 @@ namespace {
 
 constexpr auto kIgnoreActivationTimeoutMs = 500;
 
-NSMenuItem *CreateMenuItem(
-		QString title,
-		rpl::lifetime &lifetime,
-		Fn<void()> callback,
-		bool enabled = true) {
-	id block = [^{
-		Core::Sandbox::Instance().customEnterFromEventLoop(callback);
-	} copy];
-
-	NSMenuItem *item = [[NSMenuItem alloc]
-		initWithTitle:Q2NSString(title)
-		action:@selector(invoke)
-		keyEquivalent:@""];
-	[item setTarget:block];
-	[item setEnabled:enabled];
-
-	lifetime.add([=] {
-		[block release];
+void SetupDockMenu() {
+	static const auto DockMenu = std::make_unique<QMenu>();
+	QObject::connect(DockMenu.get(), &QMenu::aboutToShow, [] {
+		Menu::RefreshDockMenu(DockMenu.get());
 	});
-	return [item autorelease];
+	DockMenu->setAsDockMenu();
 }
 
 } // namespace
-
-@interface RpMenu : NSMenu {
-}
-
-- (rpl::lifetime &) lifetime;
-
-@end // @interface Menu
-
-@implementation RpMenu {
-	rpl::lifetime _lifetime;
-}
-
-- (rpl::lifetime &) lifetime {
-	return _lifetime;
-}
-
-@end // @implementation Menu
 
 @interface qVisualize : NSObject {
 }
@@ -139,8 +106,6 @@ NSMenuItem *CreateMenuItem(
 - (void) receiveWakeNote:(NSNotification*)note;
 
 - (void) ignoreApplicationActivationRightNow;
-
-- (NSMenu *) applicationDockMenu:(NSApplication *)sender;
 
 @end // @interface ApplicationDelegate
 
@@ -205,58 +170,13 @@ ApplicationDelegate *_sharedDelegate = nil;
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
 		Core::App().settings().setSystemDarkMode(Platform::IsDarkMode());
-#elif QT_VERSION < QT_VERSION_CHECK(6, 6, 0) // Qt < 6.5.0
-		QWindowSystemInterface::handleThemeChange();
-#endif // Qt < 6.6.0
+#endif // Qt < 6.5.0
 	});
 }
 
 - (void) ignoreApplicationActivationRightNow {
 	_ignoreActivation = true;
 	_ignoreActivationStop.callOnce(kIgnoreActivationTimeoutMs);
-}
-
-- (NSMenu *) applicationDockMenu:(NSApplication *)sender {
-	if (!Core::IsAppLaunched()) {
-		return nil;
-	}
-	RpMenu* dockMenu = [[[RpMenu alloc] initWithTitle: @""] autorelease];
-	[dockMenu setAutoenablesItems:false];
-
-	auto notifyCallback = [] {
-		auto &settings = Core::App().settings();
-		settings.setDesktopNotify(!settings.desktopNotify());
-	};
-	[dockMenu addItem:CreateMenuItem(
-		Core::App().settings().desktopNotify()
-			? tr::lng_disable_notifications_from_tray(tr::now)
-			: tr::lng_enable_notifications_from_tray(tr::now),
-		[dockMenu lifetime],
-		std::move(notifyCallback))];
-
-	using namespace Media::Player;
-	const auto state = instance()->getState(instance()->getActiveType());
-	if (!IsStoppedOrStopping(state.state)) {
-		[dockMenu addItem:[NSMenuItem separatorItem]];
-		[dockMenu addItem:CreateMenuItem(
-			tr::lng_mac_menu_player_previous(tr::now),
-			[dockMenu lifetime],
-			[] { instance()->previous(); },
-			instance()->previousAvailable(instance()->getActiveType()))];
-		[dockMenu addItem:CreateMenuItem(
-			IsPausedOrPausing(state.state)
-				? tr::lng_mac_menu_player_resume(tr::now)
-				: tr::lng_mac_menu_player_pause(tr::now),
-			[dockMenu lifetime],
-			[] { instance()->playPause(); })];
-		[dockMenu addItem:CreateMenuItem(
-			tr::lng_mac_menu_player_next(tr::now),
-			[dockMenu lifetime],
-			[] { instance()->next(); },
-			instance()->nextAvailable(instance()->getActiveType()))];
-	}
-
-	return dockMenu;
 }
 
 @end // @implementation ApplicationDelegate
@@ -310,6 +230,8 @@ void objc_start() {
 		addObserver: _sharedDelegate
 		selector: @selector(receiveWakeNote:)
 		name: NSWorkspaceDidWakeNotification object: NULL];
+
+	crl::on_main([=] { SetupDockMenu(); });
 }
 
 void objc_ignoreApplicationActivationRightNow() {

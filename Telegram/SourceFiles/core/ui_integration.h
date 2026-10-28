@@ -45,11 +45,14 @@ public:
 	void unregisterLeaveSubscription(not_null<QWidget*> widget) override;
 
 	QString emojiCacheFolder() override;
+	QString fontsCacheFolder() override;
 	QString openglCheckFilePath() override;
 	QString angleBackendFilePath() override;
 
 	void textActionsUpdated() override;
 	void activationFromTopPanel() override;
+	void touchCounterIncrement() override;
+	int touchCounterNow() override;
 
 	bool screenIsLocked() override;
 
@@ -79,6 +82,7 @@ public:
 	QString phraseFormattingBlockquote() override;
 	QString phraseFormattingMonospace() override;
 	QString phraseFormattingSpoiler() override;
+	QString phraseFormattingDate() override;
 	QString phraseButtonOk() override;
 	QString phraseButtonClose() override;
 	QString phraseButtonCancel() override;
@@ -92,6 +96,12 @@ public:
 	QString phraseBotAllowWriteTitle() override;
 	QString phraseBotAllowWriteConfirm() override;
 	QString phraseQuoteHeaderCopy() override;
+	QString phraseMinimize() override;
+	QString phraseMaximize() override;
+	QString phraseRestore() override;
+
+private:
+	int _touchCounter = 0;
 
 };
 

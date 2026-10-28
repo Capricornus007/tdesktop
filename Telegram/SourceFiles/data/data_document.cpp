@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/view/media/history_view_gif.h"
+#include "test/test_transfer.h"
 #include "window/window_session_controller.h"
 #include "ui/boxes/confirm_box.h"
 #include "base/base_file_utilities.h"
@@ -86,6 +87,24 @@ void UpdateStickerSetIdentifier(
 	}, [](const auto &) {
 		return StickerSetIdentifier();
 	});
+}
+
+[[nodiscard]] crl::time MillisecondsFromSeconds(float64 seconds) {
+	constexpr auto limit = float64(std::numeric_limits<crl::time>::max());
+	const auto milliseconds = seconds * 1000.;
+	return (std::isfinite(milliseconds) && (std::abs(milliseconds) < limit))
+		? crl::time(base::SafeRound(milliseconds))
+		: crl::time(0);
+}
+
+[[nodiscard]] int ResolveAttributeVsTranscodeQuality(
+		int attributesQuality,
+		int transcodeMax) {
+	return (transcodeMax > 0
+		&& (attributesQuality < transcodeMax
+			|| attributesQuality > transcodeMax * 1.5))
+		? transcodeMax
+		: attributesQuality;
 }
 
 } // namespace
@@ -409,13 +428,16 @@ void DocumentData::setattributes(
 			} else if (const auto info = sticker()) {
 				info->type = StickerType::Webm;
 			}
-			_duration = crl::time(
-				base::SafeRound(data.vduration().v * 1000));
+			_duration = MillisecondsFromSeconds(data.vduration().v);
 			setMaybeSupportsStreaming(data.is_supports_streaming());
 			if (data.is_nosound()) {
 				_flags |= Flag::SilentVideo;
 			}
 			dimensions = QSize(data.vw().v, data.vh().v);
+			if (const auto info = video()) {
+				info->startTs = MillisecondsFromSeconds(
+					data.vvideo_start_ts().value_or_empty());
+			}
 		}, [&](const MTPDdocumentAttributeAudio &data) {
 			if (type == FileDocument) {
 				if (data.is_voice()) {
@@ -547,8 +569,7 @@ void DocumentData::setVideoQualities(
 		return document->isVideoFile()
 			&& !document->dimensions.isEmpty()
 			&& !document->inappPlaybackFailed()
-			&& document->useStreamingLoader()
-			&& document->canBeStreamed(nullptr);
+			&& document->useStreamingLoader();
 	};
 	ranges::sort(
 		qualities,
@@ -578,18 +599,82 @@ void DocumentData::setVideoQualities(
 	}
 	qualities.erase(qualities.begin() + count, qualities.end());
 	if (!qualities.empty()) {
-		if (const auto mine = resolveVideoQuality()) {
-			if (mine > qualities.front()->resolveVideoQuality()) {
-				qualities.insert(begin(qualities), this);
+		auto transcodeMax = 0;
+		for (const auto &quality : qualities) {
+			const auto qres = quality->resolveVideoQuality();
+			if (qres > transcodeMax) {
+				transcodeMax = qres;
 			}
+		}
+		const auto attributesSize = isVideoFile() ? dimensions : QSize();
+		const auto attributesQuality = attributesSize.isEmpty()
+			? 0
+			: std::min(attributesSize.width(), attributesSize.height());
+		auto mine = ResolveAttributeVsTranscodeQuality(
+			attributesQuality,
+			transcodeMax);
+		if (mine) {
+			qualities.insert(begin(qualities), this);
 		}
 	}
 	data->qualities = std::move(qualities);
 }
 
 int DocumentData::resolveVideoQuality() const {
-	const auto size = isVideoFile() ? dimensions : QSize();
-	return size.isEmpty() ? 0 : std::min(size.width(), size.height());
+	if (const auto data = video()) {
+		if (!data->realVideoSize.isEmpty()) {
+			const auto size = data->realVideoSize;
+			return std::min(size.width(), size.height());
+		}
+		const auto attributesSize = isVideoFile() ? dimensions : QSize();
+		const auto attributesQuality = attributesSize.isEmpty()
+			? 0
+			: std::min(attributesSize.width(), attributesSize.height());
+		if (!data->qualities.empty()) {
+			auto transcodeMax = 0;
+			for (const auto &quality : data->qualities) {
+				if (quality != this) {
+					const auto qres = quality->resolveVideoQuality();
+					if (qres > transcodeMax) {
+						transcodeMax = qres;
+					}
+				}
+			}
+			if (transcodeMax > 0) {
+				return ResolveAttributeVsTranscodeQuality(
+					attributesQuality,
+					transcodeMax);
+			}
+		}
+	}
+	const auto attributesSize = isVideoFile() ? dimensions : QSize();
+	return attributesSize.isEmpty()
+		? 0
+		: std::min(attributesSize.width(), attributesSize.height());
+}
+
+int DocumentData::resolveOriginalVideoQuality() const {
+	if (const auto data = video()) {
+		if (!data->realVideoSize.isEmpty()) {
+			const auto size = data->realVideoSize;
+			return std::min(size.width(), size.height());
+		}
+	}
+	const auto attributesSize = isVideoFile() ? dimensions : QSize();
+	return attributesSize.isEmpty()
+		? 0
+		: std::min(attributesSize.width(), attributesSize.height());
+}
+
+Media::VideoQuality DocumentData::initialPlaybackVideoQuality(
+		Media::VideoQuality request) const {
+	return (isVideoFile() && !filepath(true).isEmpty())
+		? Media::VideoQuality{
+			.manual = 1u,
+			.height = uint32(std::max(resolveOriginalVideoQuality(), 0)),
+			.original = 1u,
+		}
+		: request;
 }
 
 auto DocumentData::resolveQualities(HistoryItem *context) const
@@ -611,19 +696,28 @@ not_null<DocumentData*> DocumentData::chooseQuality(
 		return this;
 	}
 	const auto height = int(request.height);
-	auto closest = this;
-	auto closestAbs = std::abs(height - resolveVideoQuality());
-	auto closestSize = size;
+	if (request.original) {
+		return this;
+	}
+
+	auto closest = (DocumentData*)nullptr;
+	auto closestAbs = -1;
+	auto closestSize = -1;
+
 	for (const auto &quality : list) {
-		const auto abs = std::abs(height - quality->resolveVideoQuality());
-		if (abs < closestAbs
-			|| (abs == closestAbs && quality->size < closestSize)) {
+		const auto qres = quality->resolveVideoQuality();
+		const auto abs = std::abs(height - qres);
+		if (!closest
+			|| abs < closestAbs
+			|| (abs == closestAbs && (quality->size < closestSize
+				|| (closest == this && quality != this)))) {
 			closest = quality;
 			closestAbs = abs;
 			closestSize = quality->size;
 		}
 	}
-	return closest;
+
+	return closest ? closest : this;
 }
 
 void DocumentData::validateLottieSticker() {
@@ -724,6 +818,11 @@ bool DocumentData::isPatternWallPaperPNG() const {
 
 bool DocumentData::isPatternWallPaperSVG() const {
 	return isWallPaper() && hasMimeType(u"application/x-tgwallpattern"_q);
+}
+
+bool DocumentData::isSvgImage() const {
+	return hasMimeType(u"image/svg+xml"_q)
+		|| _filename.endsWith(u".svg"_q, Qt::CaseInsensitive);
 }
 
 bool DocumentData::isPremiumSticker() const {
@@ -982,6 +1081,20 @@ bool DocumentData::loading() const {
 	return (_loader != nullptr);
 }
 
+void DocumentData::permitLoadFromCloud() {
+	if (_loader) {
+		_loader->permitLoadFromCloud();
+	}
+}
+
+void DocumentData::setForbidsFileSave() {
+	_flags |= Flag::FileSaveForbidden;
+}
+
+bool DocumentData::forbidsFileSave() const {
+	return (_flags & Flag::FileSaveForbidden);
+}
+
 QString DocumentData::loadingFilePath() const {
 	return loading() ? _loader->fileName() : QString();
 }
@@ -994,6 +1107,9 @@ bool DocumentData::displayLoading() const {
 
 float64 DocumentData::progress() const {
 	if (uploading()) {
+		if (uploadingData->preparing) {
+			return 0.;
+		}
 		if (uploadingData->size > 0) {
 			const auto result = float64(uploadingData->offset)
 				/ float64(uploadingData->size);
@@ -1112,14 +1228,16 @@ void DocumentData::save(
 		const QString &toFile,
 		LoadFromCloudSetting fromCloud,
 		bool autoLoading) {
+	Test::NotifyDocumentSave(this, toFile, autoLoading);
 	if (const auto media = activeMediaView(); media && media->loaded(true)) {
-		auto &l = location(true);
+		const auto &l = location(true);
 		if (!toFile.isEmpty()) {
 			if (!media->bytes().isEmpty()) {
 				QFile f(toFile);
-				f.open(QIODevice::WriteOnly);
-				f.write(media->bytes());
-				f.close();
+				if (f.open(QIODevice::WriteOnly)) {
+					f.write(media->bytes());
+					f.close();
+				}
 
 				setLocation(Core::FileLocation(toFile));
 				session().local().writeFileLocation(
@@ -1216,7 +1334,7 @@ void DocumentData::save(
 
 void DocumentData::handleLoaderUpdates() {
 	_loader->updates(
-	) | rpl::start_with_next_error_done([=] {
+	) | rpl::on_next_error_done([=] {
 		_owner->documentLoadProgress(this);
 	}, [=](FileLoader::Error error) {
 		using FailureReason = FileLoader::FailureReason;
@@ -1245,6 +1363,7 @@ void DocumentData::handleLoaderUpdates() {
 		}
 		finishLoad();
 		status = FileDownloadFailed;
+		Test::NotifyDocumentLoadFailed(this, error.started);
 		_owner->documentLoadFail(this, error.started);
 	}, [=] {
 		finishLoad();
@@ -1361,6 +1480,9 @@ bool DocumentData::saveFromDataSilent() {
 }
 
 bool DocumentData::saveFromDataChecked() {
+	if (forbidsFileSave()) {
+		return false;
+	}
 	const auto media = activeMediaView();
 	if (!media) {
 		return false;
@@ -1428,7 +1550,19 @@ bool DocumentData::isStickerSetInstalled() const {
 Image *DocumentData::getReplyPreview(
 		Data::FileOrigin origin,
 		not_null<PeerData*> context,
-		bool spoiler) {
+		bool spoiler,
+		bool skipCover) {
+	if (!skipCover && v::is<Data::FileOriginMessage>(origin.data)) {
+		if (const auto item = _owner->message(
+				v::get<FullMsgId>(origin.data))) {
+			if (const auto cover = LookupVideoCover(this, item)) {
+				return cover->getReplyPreview(
+					std::move(origin),
+					context,
+					spoiler);
+			}
+		}
+	}
 	if (!hasThumbnail()) {
 		return nullptr;
 	} else if (!_replyPreview) {
@@ -1439,7 +1573,7 @@ Image *DocumentData::getReplyPreview(
 
 Image *DocumentData::getReplyPreview(not_null<HistoryItem*> item) {
 	const auto media = item->media();
-	const auto spoiler = media && media->hasSpoiler();
+	const auto spoiler = media && media->hasSpoilerForPreview();
 	return getReplyPreview(item->fullId(), item->history()->peer, spoiler);
 }
 
@@ -1533,17 +1667,8 @@ bool DocumentData::useStreamingLoader() const {
 		|| isVoiceMessage();
 }
 
-bool DocumentData::canBeStreamed(HistoryItem *item) const {
-	// Streaming couldn't be used with external player
-	// Maybe someone brave will implement this once upon a time...
-	static const auto &ExternalVideoPlayer = base::options::lookup<bool>(
-		Data::kOptionExternalVideoPlayer);
-	return hasRemoteLocation()
-		&& supportsStreaming()
-		&& (!isVideoFile()
-			|| storyMedia()
-			|| !ExternalVideoPlayer.value()
-			|| (item && !item->allowsForward()));
+bool DocumentData::canBeStreamed() const {
+	return hasRemoteLocation() && supportsStreaming();
 }
 
 void DocumentData::setInappPlaybackFailed() {
@@ -1701,6 +1826,10 @@ void DocumentData::forceIsStreamedAnimation() {
 	setMaybeSupportsStreaming(true);
 }
 
+bool DocumentData::isMusicForProfile() const {
+	return isSong();
+}
+
 bool DocumentData::isVoiceMessage() const {
 	return (type == VoiceDocument);
 }
@@ -1729,6 +1858,7 @@ bool DocumentData::isTheme() const {
 		|| _filename.endsWith(u".tdesktop-palette"_q, Qt::CaseInsensitive)
 		|| (hasMimeType(u"application/x-tgtheme-tdesktop"_q)
 			&& (_filename.isEmpty()
+				|| !_filename.contains('.')
 				|| _nameType == Core::NameType::ThemeFile));
 }
 

@@ -7,14 +7,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "core/shortcuts.h"
 
+#include "base/platform/base_platform_info.h"
+#include "base/event_filter.h"
+#include "base/parse_helper.h"
+#include "core/application.h"
+#include "core/version.h"
 #include "mainwindow.h"
 #include "mainwidget.h"
 #include "window/window_controller.h"
-#include "core/application.h"
 #include "media/player/media_player_instance.h"
-#include "base/platform/base_platform_info.h"
 #include "platform/platform_specific.h"
-#include "base/parse_helper.h"
 
 #include <QAction>
 #include <QShortcut>
@@ -29,6 +31,19 @@ constexpr auto kCountLimit = 256; // How many shortcuts can be in json file.
 
 rpl::event_stream<not_null<Request*>> RequestsStream;
 bool Paused/* = false*/;
+
+const auto kChatSwitchSpecialKeys = std::array{
+	Qt::Key_Left,
+	Qt::Key_Right,
+	Qt::Key_Up,
+	Qt::Key_Down,
+	Qt::Key_Q,
+};
+Qt::Key ChatSwitchModifier/* = Qt::Key()*/;
+bool ChatSwitchStarted/* = false*/;
+QObject *ChatSwitchFilter/* = nullptr*/;
+rpl::event_stream<ChatSwitchRequest> ChatSwitchStream;
+std::array<Qt::Key, kChatSwitchSpecialKeys.size()> ChatSwitchKeyPressHandled;
 
 const auto AutoRepeatCommands = base::flat_set<Command>{
 	Command::MediaPrevious,
@@ -57,124 +72,105 @@ const auto SupportCommands = base::flat_set<Command>{
 };
 
 const auto CommandByName = base::flat_map<QString, Command>{
-	{ u"close_telegram"_q    , Command::Close },
-	{ u"lock_telegram"_q     , Command::Lock },
-	{ u"minimize_telegram"_q , Command::Minimize },
-	{ u"quit_telegram"_q     , Command::Quit },
+	{ u"close_telegram"_q                , Command::Close },
+	{ u"lock_telegram"_q                 , Command::Lock },
+	{ u"minimize_telegram"_q             , Command::Minimize },
+	{ u"quit_telegram"_q                 , Command::Quit },
 	{ u"global_search"_q     , Command::GlobalSearch },
+	{ u"reopen_closed_window"_q          , Command::ReopenClosedWindow },
+	{ u"close_other_windows"_q           , Command::CloseOtherWindows },
 
-	{ u"media_play"_q        , Command::MediaPlay },
-	{ u"media_pause"_q       , Command::MediaPause },
-	{ u"media_playpause"_q   , Command::MediaPlayPause },
-	{ u"media_stop"_q        , Command::MediaStop },
-	{ u"media_previous"_q    , Command::MediaPrevious },
-	{ u"media_next"_q        , Command::MediaNext },
+	{ u"media_play"_q                    , Command::MediaPlay },
+	{ u"media_pause"_q                   , Command::MediaPause },
+	{ u"media_playpause"_q               , Command::MediaPlayPause },
+	{ u"media_stop"_q                    , Command::MediaStop },
+	{ u"media_previous"_q                , Command::MediaPrevious },
+	{ u"media_next"_q                    , Command::MediaNext },
 
-	{ u"search"_q            , Command::Search },
+	{ u"search"_q                        , Command::Search },
 
-	{ u"previous_chat"_q     , Command::ChatPrevious },
-	{ u"next_chat"_q         , Command::ChatNext },
-	{ u"first_chat"_q        , Command::ChatFirst },
-	{ u"last_chat"_q         , Command::ChatLast },
-	{ u"self_chat"_q         , Command::ChatSelf },
-	{ u"pinned_chat1"_q      , Command::ChatPinned1 },
-	{ u"pinned_chat2"_q      , Command::ChatPinned2 },
-	{ u"pinned_chat3"_q      , Command::ChatPinned3 },
-	{ u"pinned_chat4"_q      , Command::ChatPinned4 },
-	{ u"pinned_chat5"_q      , Command::ChatPinned5 },
-	{ u"pinned_chat6"_q      , Command::ChatPinned6 },
-	{ u"pinned_chat7"_q      , Command::ChatPinned7 },
-	{ u"pinned_chat8"_q      , Command::ChatPinned8 },
+	{ u"previous_chat"_q                 , Command::ChatPrevious },
+	{ u"next_chat"_q                     , Command::ChatNext },
+	{ u"first_chat"_q                    , Command::ChatFirst },
+	{ u"last_chat"_q                     , Command::ChatLast },
+	{ u"self_chat"_q                     , Command::ChatSelf },
+	{ u"pinned_chat1"_q                  , Command::ChatPinned1 },
+	{ u"pinned_chat2"_q                  , Command::ChatPinned2 },
+	{ u"pinned_chat3"_q                  , Command::ChatPinned3 },
+	{ u"pinned_chat4"_q                  , Command::ChatPinned4 },
+	{ u"pinned_chat5"_q                  , Command::ChatPinned5 },
+	{ u"pinned_chat6"_q                  , Command::ChatPinned6 },
+	{ u"pinned_chat7"_q                  , Command::ChatPinned7 },
+	{ u"pinned_chat8"_q                  , Command::ChatPinned8 },
 
-	{ u"previous_folder"_q   , Command::FolderPrevious },
-	{ u"next_folder"_q       , Command::FolderNext },
-	{ u"all_chats"_q         , Command::ShowAllChats },
+	{ u"previous_folder"_q               , Command::FolderPrevious },
+	{ u"next_folder"_q                   , Command::FolderNext },
+	{ u"all_chats"_q                     , Command::ShowAllChats },
 
-	{ u"account1"_q          , Command::ShowAccount1 },
-	{ u"account2"_q          , Command::ShowAccount2 },
-	{ u"account3"_q          , Command::ShowAccount3 },
-	{ u"account4"_q          , Command::ShowAccount4 },
-	{ u"account5"_q          , Command::ShowAccount5 },
-	{ u"account6"_q          , Command::ShowAccount6 },
+	{ u"account1"_q                      , Command::ShowAccount1 },
+	{ u"account2"_q                      , Command::ShowAccount2 },
+	{ u"account3"_q                      , Command::ShowAccount3 },
+	{ u"account4"_q                      , Command::ShowAccount4 },
+	{ u"account5"_q                      , Command::ShowAccount5 },
+	{ u"account6"_q                      , Command::ShowAccount6 },
 
-	{ u"folder1"_q           , Command::ShowFolder1 },
-	{ u"folder2"_q           , Command::ShowFolder2 },
-	{ u"folder3"_q           , Command::ShowFolder3 },
-	{ u"folder4"_q           , Command::ShowFolder4 },
-	{ u"folder5"_q           , Command::ShowFolder5 },
-	{ u"folder6"_q           , Command::ShowFolder6 },
-	{ u"last_folder"_q       , Command::ShowFolderLast },
+	{ u"folder1"_q                       , Command::ShowFolder1 },
+	{ u"folder2"_q                       , Command::ShowFolder2 },
+	{ u"folder3"_q                       , Command::ShowFolder3 },
+	{ u"folder4"_q                       , Command::ShowFolder4 },
+	{ u"folder5"_q                       , Command::ShowFolder5 },
+	{ u"folder6"_q                       , Command::ShowFolder6 },
+	{ u"last_folder"_q                   , Command::ShowFolderLast },
 
-	{ u"show_archive"_q      , Command::ShowArchive },
-	{ u"show_contacts"_q     , Command::ShowContacts },
+	{ u"show_archive"_q                  , Command::ShowArchive },
+	{ u"show_contacts"_q                 , Command::ShowContacts },
 
-	{ u"read_chat"_q         , Command::ReadChat },
+	{ u"read_chat"_q                     , Command::ReadChat },
 
-	{ u"show_chat_menu"_q    , Command::ShowChatMenu },
-	{ u"show_chat_preview"_q , Command::ShowChatPreview },
+	{ u"show_chat_menu"_q                , Command::ShowChatMenu },
+	{ u"show_chat_preview"_q             , Command::ShowChatPreview },
+
+	{ u"record_voice"_q                  , Command::RecordVoice },
 
 	// Shortcuts that have no default values.
 	{ u"message"_q                       , Command::JustSendMessage },
 	{ u"message_silently"_q              , Command::SendSilentMessage },
 	{ u"message_scheduled"_q             , Command::ScheduleMessage },
+	{ u"ai_compose_apply"_q              , Command::ComposeAiApplyInPlace },
+	{ u"show_rich_editor"_q              , Command::ShowRichEditor },
+	{ u"toggle_webpage_preview"_q        , Command::ToggleWebPagePreview },
 	{ u"media_viewer_video_fullscreen"_q , Command::MediaViewerFullscreen },
 	{ u"show_scheduled"_q                , Command::ShowScheduled },
 	{ u"archive_chat"_q                  , Command::ArchiveChat },
+	{ u"record_round"_q                  , Command::RecordRound },
+	{ u"show_admin_log"_q                , Command::ShowAdminLog },
 	//
 	{ u"fast_forward"_q      , Command::FastForward },
 	{ u"fast_copy"_q         , Command::FastCopy },
 };
 
-const auto CommandNames = base::flat_map<Command, QString>{
-	{ Command::Close          , u"close_telegram"_q },
-	{ Command::Lock           , u"lock_telegram"_q },
-	{ Command::Minimize       , u"minimize_telegram"_q },
-	{ Command::Quit           , u"quit_telegram"_q },
-	{ Command::GlobalSearch   , qsl("global_search") },
-
-	{ Command::MediaPlay      , u"media_play"_q },
-	{ Command::MediaPause     , u"media_pause"_q },
-	{ Command::MediaPlayPause , u"media_playpause"_q },
-	{ Command::MediaStop      , u"media_stop"_q },
-	{ Command::MediaPrevious  , u"media_previous"_q },
-	{ Command::MediaNext      , u"media_next"_q },
-
-	{ Command::Search         , u"search"_q },
-
-	{ Command::ChatPrevious   , u"previous_chat"_q },
-	{ Command::ChatNext       , u"next_chat"_q },
-	{ Command::ChatFirst      , u"first_chat"_q },
-	{ Command::ChatLast       , u"last_chat"_q },
-	{ Command::ChatSelf       , u"self_chat"_q },
-
-	{ Command::FolderPrevious , u"previous_folder"_q },
-	{ Command::FolderNext     , u"next_folder"_q },
-	{ Command::ShowAllChats   , u"all_chats"_q },
-
-	{ Command::ShowFolder1    , u"folder1"_q },
-	{ Command::ShowFolder2    , u"folder2"_q },
-	{ Command::ShowFolder3    , u"folder3"_q },
-	{ Command::ShowFolder4    , u"folder4"_q },
-	{ Command::ShowFolder5    , u"folder5"_q },
-	{ Command::ShowFolder6    , u"folder6"_q },
-	{ Command::ShowFolderLast , u"last_folder"_q },
-
-	{ Command::ShowArchive    , u"show_archive"_q },
-	{ Command::ShowContacts   , u"show_contacts"_q },
-
-	{ Command::ReadChat       , u"read_chat"_q },
-
-	{ Command::FastForward    , u"fast_forward"_q },
-	{ Command::FastCopy       , u"fast_copy"_q },
+const base::flat_map<Command, QString> &CommandNames() {
+	static const auto result = [&] {
+		auto result = base::flat_map<Command, QString>();
+		for (const auto &[name, command] : CommandByName) {
+			result.emplace(command, name);
+		}
+		return result;
+	}();
+	return result;
 };
 
 [[maybe_unused]] constexpr auto kNoValue = {
 	Command::JustSendMessage,
 	Command::SendSilentMessage,
 	Command::ScheduleMessage,
+	Command::ComposeAiApplyInPlace,
+	Command::ShowRichEditor,
+	Command::ToggleWebPagePreview,
 	Command::MediaViewerFullscreen,
 	Command::ShowScheduled,
 	Command::ArchiveChat,
+	Command::RecordRound,
 };
 
 class Manager {
@@ -187,6 +183,7 @@ public:
 	void toggleMedia(bool toggled);
 	void toggleSupport(bool toggled);
 	void listen(not_null<QWidget*> widget);
+	[[nodiscard]] bool handles(const QKeySequence &sequence) const;
 
 	[[nodiscard]] const QStringList &errors() const;
 
@@ -392,6 +389,10 @@ void Manager::listen(not_null<QWidget*> widget) {
 	}
 }
 
+bool Manager::handles(const QKeySequence &sequence) const {
+	return _shortcuts.contains(sequence);
+}
+
 void Manager::pruneListened() {
 	for (auto i = begin(_listened); i != end(_listened);) {
 		if (i->data()) {
@@ -479,50 +480,48 @@ bool Manager::readCustomFile() {
 void Manager::fillDefaults() {
 	const auto ctrl = Platform::IsMac() ? u"meta"_q : u"ctrl"_q;
 
-	set(u"ctrl+w"_q, Command::Close);
-	set(u"ctrl+f4"_q, Command::Close);
-	set(u"ctrl+l"_q, Command::Lock);
-	set(u"ctrl+m"_q, Command::Minimize);
-	set(u"ctrl+q"_q, Command::Quit);
+	set(u"ctrl+w"_q                  , Command::Close);
+	set(u"ctrl+f4"_q                 , Command::Close);
+	set(u"ctrl+l"_q                  , Command::Lock);
+	set(u"ctrl+m"_q                  , Command::Minimize);
+	set(u"ctrl+q"_q                  , Command::Quit);
 	set(qsl("ctrl+t"), Command::GlobalSearch);
+	set(u"ctrl+shift+t"_q            , Command::ReopenClosedWindow);
+	set(u"ctrl+shift+w"_q            , Command::CloseOtherWindows);
 
-	set(u"media play"_q, Command::MediaPlay);
-	set(u"media pause"_q, Command::MediaPause);
-	set(u"toggle media play/pause"_q, Command::MediaPlayPause);
-	set(u"media stop"_q, Command::MediaStop);
-	set(u"media previous"_q, Command::MediaPrevious);
-	set(u"media next"_q, Command::MediaNext);
+	set(u"media play"_q              , Command::MediaPlay);
+	set(u"media pause"_q             , Command::MediaPause);
+	set(u"toggle media play/pause"_q , Command::MediaPlayPause);
+	set(u"media stop"_q              , Command::MediaStop);
+	set(u"media previous"_q          , Command::MediaPrevious);
+	set(u"media next"_q              , Command::MediaNext);
 
-	set(u"ctrl+f"_q, Command::Search);
-	set(u"search"_q, Command::Search);
-	set(u"find"_q, Command::Search);
+	set(u"ctrl+f"_q                  , Command::Search);
+	set(u"search"_q                  , Command::Search);
+	set(u"find"_q                    , Command::Search);
 
-	set(u"ctrl+pgdown"_q, Command::ChatNext);
-	set(u"alt+down"_q, Command::ChatNext);
-	set(u"ctrl+pgup"_q, Command::ChatPrevious);
-	set(u"alt+up"_q, Command::ChatPrevious);
+	set(u"ctrl+pgdown"_q             , Command::ChatNext);
+	set(u"alt+down"_q                , Command::ChatNext);
+	set(u"ctrl+pgup"_q               , Command::ChatPrevious);
+	set(u"alt+up"_q                  , Command::ChatPrevious);
 
-	set(u"%1+tab"_q.arg(ctrl), Command::ChatNext);
-	set(u"%1+shift+tab"_q.arg(ctrl), Command::ChatPrevious);
-	set(u"%1+backtab"_q.arg(ctrl), Command::ChatPrevious);
+	set(u"ctrl+alt+home"_q           , Command::ChatFirst);
+	set(u"ctrl+alt+end"_q            , Command::ChatLast);
 
-	set(u"ctrl+alt+home"_q, Command::ChatFirst);
-	set(u"ctrl+alt+end"_q, Command::ChatLast);
+	set(u"f5"_q                      , Command::SupportReloadTemplates);
+	set(u"ctrl+delete"_q             , Command::SupportToggleMuted);
+	set(u"ctrl+insert"_q             , Command::SupportScrollToCurrent);
+	set(u"ctrl+shift+x"_q            , Command::SupportHistoryBack);
+	set(u"ctrl+shift+c"_q            , Command::SupportHistoryForward);
 
-	set(u"f5"_q, Command::SupportReloadTemplates);
-	set(u"ctrl+delete"_q, Command::SupportToggleMuted);
-	set(u"ctrl+insert"_q, Command::SupportScrollToCurrent);
-	set(u"ctrl+shift+x"_q, Command::SupportHistoryBack);
-	set(u"ctrl+shift+c"_q, Command::SupportHistoryForward);
-
-	set(u"ctrl+1"_q, Command::ChatPinned1);
-	set(u"ctrl+2"_q, Command::ChatPinned2);
-	set(u"ctrl+3"_q, Command::ChatPinned3);
-	set(u"ctrl+4"_q, Command::ChatPinned4);
-	set(u"ctrl+5"_q, Command::ChatPinned5);
-	set(u"ctrl+6"_q, Command::ChatPinned6);
-	set(u"ctrl+7"_q, Command::ChatPinned7);
-	set(u"ctrl+8"_q, Command::ChatPinned8);
+	set(u"ctrl+1"_q                  , Command::ChatPinned1);
+	set(u"ctrl+2"_q                  , Command::ChatPinned2);
+	set(u"ctrl+3"_q                  , Command::ChatPinned3);
+	set(u"ctrl+4"_q                  , Command::ChatPinned4);
+	set(u"ctrl+5"_q                  , Command::ChatPinned5);
+	set(u"ctrl+6"_q                  , Command::ChatPinned6);
+	set(u"ctrl+7"_q                  , Command::ChatPinned7);
+	set(u"ctrl+8"_q                  , Command::ChatPinned8);
 
 	auto &&folders = ranges::views::zip(
 		kShowFolder,
@@ -532,21 +531,24 @@ void Manager::fillDefaults() {
 		set(u"%1+%2"_q.arg(ctrl).arg(index), command);
 	}
 
-	set(u"%1+shift+down"_q.arg(ctrl), Command::FolderNext);
-	set(u"%1+shift+up"_q.arg(ctrl), Command::FolderPrevious);
+	set(u"%1+shift+down"_q.arg(ctrl) , Command::FolderNext);
+	set(u"%1+shift+up"_q.arg(ctrl)   , Command::FolderPrevious);
 
-	set(u"ctrl+0"_q, Command::ChatSelf);
+	set(u"ctrl+0"_q                  , Command::ChatSelf);
 
-	set(u"ctrl+9"_q, Command::ShowArchive);
-	set(u"ctrl+j"_q, Command::ShowContacts);
+	set(u"ctrl+9"_q                  , Command::ShowArchive);
+	set(u"ctrl+j"_q                  , Command::ShowContacts);
 
-	set(u"ctrl+r"_q, Command::ReadChat);
-	set(qsl("alt+f"), Command::FastForward);
-	set(qsl("alt+c"), Command::FastCopy);
+	set(u"ctrl+r"_q                  , Command::ReadChat);
 
-	set(u"ctrl+\\"_q, Command::ShowChatMenu);
-	set(u"ctrl+]"_q, Command::ShowChatPreview);
+	set(u"ctrl+\\"_q                 , Command::ShowChatMenu);
+	set(u"ctrl+]"_q                  , Command::ShowChatPreview);
 
+	set(u"ctrl+r"_q                  , Command::RecordVoice);
+
+	set(u"alt+f"_q, Command::FastForward);
+	set(u"alt+c"_q, Command::FastCopy);
+	
 	_defaults = keysCurrents();
 }
 
@@ -826,10 +828,167 @@ const QStringList &Errors() {
 	return Data.errors();
 }
 
+bool MarkChatSwitchKeyPressHandled(Qt::Key key, bool handled) {
+	if (!key) {
+		return false;
+	} else if (handled) {
+		if (ranges::contains(ChatSwitchKeyPressHandled, key)) {
+			return false;
+		}
+		const auto i = ranges::find(ChatSwitchKeyPressHandled, Qt::Key(0));
+		Assert(i != end(ChatSwitchKeyPressHandled));
+		*i = key;
+		return true;
+	}
+	const auto i = ranges::find(ChatSwitchKeyPressHandled, key);
+	if (i == end(ChatSwitchKeyPressHandled)) {
+		return false;
+	}
+	*i = Qt::Key(0);
+	return true;
+}
+
+bool CancelChatSwitch(Qt::Key result) {
+	ChatSwitchModifier = Qt::Key();
+	if (!ChatSwitchStarted) {
+		return false;
+	}
+	ChatSwitchStarted = false;
+	delete base::take(ChatSwitchFilter);
+	ChatSwitchStream.fire({ .action = result });
+	return true;
+}
+
+bool NavigateChatSwitch(Qt::Key result) {
+	if (!ChatSwitchStarted) {
+		return false;
+	}
+	ChatSwitchStream.fire({ .action = result });
+	return true;
+}
+
+bool CheckChatSwitchEvent(Qt::Key key) {
+	const auto plain = Qt::Key(int(key)
+		& ~(Qt::ControlModifier
+			| Qt::ShiftModifier
+			| Qt::AltModifier
+			| Qt::MetaModifier));
+	if (MarkChatSwitchKeyPressHandled(plain, false)) {
+		return true;
+	} else if (plain == Qt::Key_Escape) {
+		return CancelChatSwitch(Qt::Key_Escape);
+	} else if (plain == Qt::Key_Return || plain == Qt::Key_Enter) {
+		return CancelChatSwitch(Qt::Key_Enter);
+	} else if (ranges::contains(kChatSwitchSpecialKeys, plain)) {
+		return NavigateChatSwitch(Qt::Key(plain));
+	}
+	return false;
+}
+
 bool HandleEvent(
 		not_null<QObject*> object,
 		not_null<QShortcutEvent*> event) {
+	if (ChatSwitchStarted) {
+		const auto full = event->key();
+		for (auto i = 0; i != full.count(); ++i) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+			const auto raw = full[i].key();
+#else // Qt >= 6.0.0
+			const auto raw = full[i];
+#endif // Qt < 6.0.0
+			if (CheckChatSwitchEvent(Qt::Key(raw))) {
+				return true;
+			}
+		}
+		return false;
+	}
 	return Launch(Data.lookup(object));
+}
+
+rpl::producer<ChatSwitchRequest> ChatSwitchRequests() {
+	return ChatSwitchStream.events();
+}
+
+bool HandlePossibleChatSwitch(not_null<QKeyEvent*> event) {
+	const auto type = event->type();
+	if (Paused) {
+		return false;
+	} else if (type == QEvent::ShortcutOverride) {
+		const auto key = Qt::Key(event->key());
+		const auto ctrl = Platform::IsMac()
+			? Qt::MetaModifier
+			: Qt::ControlModifier;
+		if ((event->modifiers() & ctrl)
+			&& ranges::contains(kChatSwitchSpecialKeys, key)) {
+			// For Ctrl+Q in case of active chat switch we have
+			// on Windows always ShortcutOverride + KeyPress,
+			// while on macOS we have just ShortcutOverride for
+			// the first press and KeyPress only for repeat events.
+			//
+			// This complex scheme allows to handle both cases with
+			// firing the switch event Key_Q exactly once initially.
+			if (CheckChatSwitchEvent(key)) {
+				MarkChatSwitchKeyPressHandled(key, true);
+			}
+			crl::on_main([=] {
+				MarkChatSwitchKeyPressHandled(key, false);
+			});
+		}
+		if (Data.handles(QKeySequence(ctrl | Qt::Key_Tab))
+			&& (Data.handles(ctrl | Qt::ShiftModifier | Qt::Key_Backtab)
+				|| Data.handles(ctrl | Qt::ShiftModifier | Qt::Key_Tab)
+				|| Data.handles(QKeySequence(ctrl | Qt::Key_Backtab)))) {
+			return false;
+		} else if (key == Qt::Key_Control || key == Qt::Key_Meta) {
+			ChatSwitchModifier = key;
+		} else if (key == Qt::Key_Tab || key == Qt::Key_Backtab) {
+			const auto modifiers = event->modifiers();
+			if (modifiers & ctrl) {
+				if (ChatSwitchModifier == Qt::Key()) {
+					ChatSwitchModifier = Platform::IsMac()
+						? Qt::Key_Meta
+						: Qt::Key_Control;
+				}
+				const auto action = (modifiers & Qt::ShiftModifier)
+					? Qt::Key_Backtab
+					: key;
+				if (Data.handles(modifiers | key)) {
+					return false;
+				} else if (action == Qt::Key_Tab
+					&& Data.handles(QKeySequence(ctrl | Qt::Key_Tab))) {
+					return false;
+				} else if (action == Qt::Key_Backtab
+					&& Data.handles(QKeySequence(ctrl | Qt::Key_Backtab))) {
+					return false;
+				} else if (action == Qt::Key_Backtab
+					&& Data.handles(ctrl | Qt::ShiftModifier | Qt::Key_Tab)) {
+					return false;
+				}
+				const auto started = !std::exchange(ChatSwitchStarted, true);
+				if (started) {
+					Assert(!ChatSwitchFilter);
+					ChatSwitchFilter = base::install_event_filter(qApp, [=](not_null<QEvent*> e) {
+						return (e->type() == QEvent::InputMethod)
+							? base::EventFilterResult::Cancel
+							: base::EventFilterResult::Continue;
+					});
+				}
+				ChatSwitchStream.fire({
+					.action = action,
+					.started = started,
+				});
+				return true;
+			}
+		}
+	} else if (type == QEvent::KeyPress) {
+		return CheckChatSwitchEvent(Qt::Key(event->key()));
+	} else if (type == QEvent::KeyRelease) {
+		const auto key = Qt::Key(event->key());
+		if (key == ChatSwitchModifier) {
+			CancelChatSwitch(Qt::Key_Enter);
+		}
+	}
+	return false;
 }
 
 void ToggleMediaShortcuts(bool toggled) {

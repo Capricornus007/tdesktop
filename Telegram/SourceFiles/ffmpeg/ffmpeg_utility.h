@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/algorithm.h"
 
+#include <cstdint>
 #include <crl/crl_time.h>
 
 #include <QSize>
@@ -24,14 +25,8 @@ extern "C" {
 #include <libavutil/version.h>
 } // extern "C"
 
-#define DA_FFMPEG_NEW_CHANNEL_LAYOUT (LIBAVUTIL_VERSION_INT >= \
-	AV_VERSION_INT(57, 28, 100))
-
 #define DA_FFMPEG_CONST_WRITE_CALLBACK (LIBAVFORMAT_VERSION_INT >= \
 	AV_VERSION_INT(61, 01, 100))
-
-#define DA_FFMPEG_HAVE_DURATION (LIBAVUTIL_VERSION_INT >= \
-	AV_VERSION_INT(58, 02, 100))
 
 class QImage;
 
@@ -42,6 +37,9 @@ inline constexpr auto kAVBlockSize = 4096; // 4Kb for ffmpeg blocksize
 
 constexpr auto kUniversalTimeBase = AVRational{ 1, AV_TIME_BASE };
 constexpr auto kNormalAspect = AVRational{ 1, 1 };
+
+extern const char kOptionFFmpegMultiThread[];
+extern const char kOptionFFmpegThreadCount[];
 
 class AvErrorWrap {
 public:
@@ -131,6 +129,11 @@ struct FormatDeleter {
 	void operator()(AVFormatContext *value);
 };
 using FormatPointer = std::unique_ptr<AVFormatContext, FormatDeleter>;
+
+struct FormatSettings {
+	bool ignoreEditList = false;
+};
+
 [[nodiscard]] FormatPointer MakeFormatPointer(
 	void *opaque,
 	int(*read)(void *opaque, uint8_t *buffer, int bufferSize),
@@ -139,7 +142,8 @@ using FormatPointer = std::unique_ptr<AVFormatContext, FormatDeleter>;
 #else
 	int(*write)(void *opaque, uint8_t *buffer, int bufferSize),
 #endif
-	int64_t(*seek)(void *opaque, int64_t offset, int whence));
+	int64_t(*seek)(void *opaque, int64_t offset, int whence),
+	FormatSettings settings = {});
 [[nodiscard]] FormatPointer MakeWriteFormatPointer(
 	void *opaque,
 	int(*read)(void *opaque, uint8_t *buffer, int bufferSize),
@@ -151,6 +155,15 @@ using FormatPointer = std::unique_ptr<AVFormatContext, FormatDeleter>;
 	int64_t(*seek)(void *opaque, int64_t offset, int whence),
 	const QByteArray &format);
 
+// Forbids ffmpeg from opening any external resource (network URL or local
+// file) referenced by the media being decoded. All our input is provided
+// through custom IO callbacks, so no protocol is ever needed for the input
+// itself; an empty whitelist stops demuxers like dash / hls from fetching the
+// segment URLs they may reference in the file (which would otherwise leak the
+// user's IP or read arbitrary local files). Call on a freshly allocated
+// context, before avformat_open_input().
+void RestrictToCustomIO(AVFormatContext *format);
+
 struct CodecDeleter {
 	void operator()(AVCodecContext *value);
 };
@@ -159,6 +172,7 @@ using CodecPointer = std::unique_ptr<AVCodecContext, CodecDeleter>;
 struct CodecDescriptor {
 	not_null<AVStream*> stream;
 	bool hwAllowed = false;
+	int64_t videoMaxArea = 0;
 };
 [[nodiscard]] CodecPointer MakeCodecPointer(CodecDescriptor descriptor);
 
@@ -184,7 +198,7 @@ using SwscalePointer = std::unique_ptr<SwsContext, SwscaleDeleter>;
 	QSize srcSize,
 	int srcFormat,
 	QSize dstSize,
-	int dstFormat, // This field doesn't take part in caching!
+	int dstFormat,
 	SwscalePointer *existing = nullptr);
 [[nodiscard]] SwscalePointer MakeSwscalePointer(
 	not_null<AVFrame*> frame,
@@ -203,18 +217,10 @@ struct SwresampleDeleter {
 };
 using SwresamplePointer = std::unique_ptr<SwrContext, SwresampleDeleter>;
 [[nodiscard]] SwresamplePointer MakeSwresamplePointer(
-#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
 	AVChannelLayout *srcLayout,
-#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
-	uint64_t srcLayout,
-#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
 	AVSampleFormat srcFormat,
 	int srcRate,
-#if DA_FFMPEG_NEW_CHANNEL_LAYOUT
 	AVChannelLayout *dstLayout,
-#else // DA_FFMPEG_NEW_CHANNEL_LAYOUT
-	uint64_t dstLayout,
-#endif // DA_FFMPEG_NEW_CHANNEL_LAYOUT
 	AVSampleFormat dstFormat,
 	int dstRate,
 	SwresamplePointer *existing = nullptr);
@@ -226,6 +232,7 @@ void LogError(
 	const QString &details = {});
 
 [[nodiscard]] const AVCodec *FindDecoder(not_null<AVCodecContext*> context);
+[[nodiscard]] int64_t MaxPixelsForAreaLimit(int64_t area);
 [[nodiscard]] crl::time PtsToTime(int64_t pts, AVRational timeBase);
 // Used for full duration conversion.
 [[nodiscard]] crl::time PtsToTimeCeil(int64_t pts, AVRational timeBase);

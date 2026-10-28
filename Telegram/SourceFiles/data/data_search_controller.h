@@ -40,8 +40,10 @@ using HistoryRequestResult = MTPmessages_Messages;
 using GlobalMediaRequest = MTPmessages_SearchGlobal;
 struct GlobalMediaResult {
 	std::vector<Data::MessagePosition> messageIds;
+	Data::MessagePosition offsetPosition;
 	int32 offsetRate = 0;
 	int fullCount = 0;
+	int filteredCount = 0;
 };
 
 [[nodiscard]] MTPMessagesFilter PrepareSearchFilter(
@@ -56,11 +58,13 @@ struct GlobalMediaResult {
 
 [[nodiscard]] GlobalMediaResult ParseGlobalMediaResult(
 	not_null<Main::Session*> session,
-	const MTPmessages_Messages &data);
+	const MTPmessages_Messages &data,
+	bool onlyForwardable);
 
 [[nodiscard]] std::optional<SearchRequest> PrepareSearchRequest(
 	not_null<PeerData*> peer,
 	MsgId topicRootId,
+	PeerId monoforumPeerId,
 	Storage::SharedMediaType type,
 	const QString &query,
 	MsgId messageId,
@@ -92,6 +96,7 @@ public:
 
 		PeerId peerId = 0;
 		MsgId topicRootId = 0;
+		PeerId monoforumPeerId = 0;
 		PeerId migratedPeerId = 0;
 		MediaType type = MediaType::kCount;
 		QString query;
@@ -151,6 +156,7 @@ private:
 	rpl::producer<SparseIdsSlice> simpleIdsSlice(
 		PeerId peerId,
 		MsgId topicRootId,
+		PeerId monoforumPeerId,
 		MsgId aroundId,
 		const Query &query,
 		int limitBefore,

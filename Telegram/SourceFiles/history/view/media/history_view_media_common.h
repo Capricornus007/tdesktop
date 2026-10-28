@@ -7,9 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "base/runtime_composer.h"
+#include "ui/controls/ttl_media.h"
+
 class DocumentData;
 class PhotoData;
 class Image;
+class Painter;
 
 namespace HistoryView {
 class Element;
@@ -19,9 +23,18 @@ namespace Data {
 class Media;
 } // namespace Data
 
+namespace Main {
+class Session;
+} // namespace Main
+
 namespace Media::Streaming {
 struct ExpandDecision;
 } // namespace Media::Streaming
+
+namespace Ui {
+class Show;
+struct ChatPaintContext;
+} // namespace Ui
 
 namespace HistoryView {
 
@@ -33,6 +46,28 @@ void PaintInterpolatedIcon(
 	const style::icon &b,
 	float64 b_ratio,
 	QRect rect);
+
+[[nodiscard]] std::unique_ptr<Ui::TtlCountdown> MakeTtlCountdown(
+	not_null<HistoryItem*> item,
+	Fn<void()> repaint);
+
+struct TtlPaintState : RuntimeComponent<TtlPaintState, Element> {
+	std::unique_ptr<Ui::TtlCountdown> countdown;
+	QImage fireCache;
+};
+
+void PaintTtlLabel(
+	Painter &p,
+	QPoint position,
+	int outerWidth,
+	not_null<HistoryItem*> item,
+	const Ui::ChatPaintContext &context);
+
+void PaintTtlSingleViewBadge(
+	QPainter &p,
+	QRect inner,
+	not_null<HistoryItem*> item,
+	const Ui::ChatPaintContext &context);
 
 [[nodiscard]] std::unique_ptr<Media> CreateAttach(
 	not_null<Element*> parent,
@@ -74,6 +109,11 @@ void PaintInterpolatedIcon(
 	QSize desired,
 	int newWidth,
 	int maxWidth);
+
+void ShowAgeVerificationRequired(
+	std::shared_ptr<Ui::Show> show,
+	not_null<Main::Session*> session,
+	Fn<void()> reveal);
 
 [[nodiscard]] ClickHandlerPtr MakePaidMediaLink(
 	not_null<HistoryItem*> item);

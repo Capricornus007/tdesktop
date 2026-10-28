@@ -25,6 +25,7 @@ namespace Ui {
 namespace {
 
 constexpr auto kDigitNone = int(-1);
+constexpr auto kMaxDigitsCount = 32;
 
 [[nodiscard]] int Circular(int left, int right) {
 	return ((left % right) + right) % right;
@@ -69,6 +70,7 @@ public:
 
 protected:
 	void paintEvent(QPaintEvent *e) override;
+	void mouseReleaseEvent(QMouseEvent *e) override;
 
 private:
 	Shaker _shaker;
@@ -157,12 +159,30 @@ void CodeDigit::paintEvent(QPaintEvent *e) {
 	p.drawText(rect(), QString::number(_viewDigit), style::al_center);
 }
 
+void CodeDigit::mouseReleaseEvent(QMouseEvent *e) {
+	QGuiApplication::inputMethod()->show();
+	Ui::AbstractButton::mouseReleaseEvent(e);
+}
+
 CodeInput::CodeInput(QWidget *parent)
 : Ui::RpWidget(parent) {
 	setFocusPolicy(Qt::StrongFocus);
+	setAttribute(Qt::WA_InputMethodEnabled);
+	setInputMethodHints(Qt::ImhDigitsOnly
+		| Qt::ImhNoPredictiveText
+		| Qt::ImhSensitiveData);
+}
+
+QString CodeInput::accessibilityName() {
+	return tr::lng_code_ph(tr::now);
+}
+
+QString CodeInput::accessibilityValue() const {
+	return collectDigits();
 }
 
 void CodeInput::setDigitsCountMax(int digitsCount) {
+	digitsCount = std::clamp(digitsCount, 1, kMaxDigitsCount);
 	_digitsCountMax = digitsCount;
 
 	_digits.clear();
@@ -177,6 +197,7 @@ void CodeInput::setDigitsCountMax(int digitsCount) {
 			+ st::introCodeDigitSkip * (digitsCount - 1)
 			+ padding.right(),
 		st::introCodeDigitHeight);
+	setNaturalWidth(width());
 
 	for (auto i = 0; i < digitsCount; i++) {
 		const auto widget = Ui::CreateChild<CodeDigit>(this);
@@ -251,19 +272,7 @@ void CodeInput::keyPressEvent(QKeyEvent *e) {
 		_currentIndex = Circular(_currentIndex - 1, _digits.size());
 		unfocusAll(_currentIndex);
 	} else if (key >= Qt::Key_0 && key <= Qt::Key_9) {
-		const auto index = int(key - Qt::Key_0);
-		_digits[_currentIndex]->setDigit(index);
-		_currentIndex = Circular(_currentIndex + 1, _digits.size());
-		if (!_currentIndex) {
-			const auto result = collectDigits();
-			if (result.size() == _digitsCountMax) {
-				_codeCollected.fire_copy(result);
-				_currentIndex = _digits.size() - 1;
-			} else {
-				findEmptyAndPerform([&](int i) { _currentIndex = i; });
-			}
-		}
-		unfocusAll(_currentIndex);
+		processDigit(int(key - Qt::Key_0));
 	} else if (key == Qt::Key_Delete) {
 		_digits[_currentIndex]->setDigit(kDigitNone);
 	} else if (key == Qt::Key_Backspace) {
@@ -285,6 +294,10 @@ void CodeInput::keyPressEvent(QKeyEvent *e) {
 	} else if (key == Qt::Key_End || key == Qt::Key_PageDown) {
 		unfocusAll(_currentIndex = (_digits.size() - 1));
 	}
+}
+
+void CodeInput::keyReleaseEvent(QKeyEvent *e) {
+	QGuiApplication::inputMethod()->show();
 }
 
 void CodeInput::contextMenuEvent(QContextMenuEvent *e) {
@@ -310,6 +323,7 @@ void CodeInput::insertCodeAndSubmit(const QString &code) {
 		&& _digits[_currentIndex]->digit() != kDigitNone) {
 		requestCode();
 	}
+	accessibilityValueChanged();
 }
 
 QString CodeInput::collectDigits() const {
@@ -338,6 +352,31 @@ void CodeInput::findEmptyAndPerform(const Fn<void(int)> &callback) {
 			break;
 		}
 	}
+}
+
+void CodeInput::inputMethodEvent(QInputMethodEvent *e) {
+	const auto text = e->commitString();
+	for (const auto &ch : text) {
+		if (ch.isDigit()) {
+			processDigit(ch.digitValue());
+		}
+	}
+	e->accept();
+}
+
+void CodeInput::processDigit(int digit) {
+	_digits[_currentIndex]->setDigit(digit);
+	_currentIndex = Circular(_currentIndex + 1, _digits.size());
+	if (!_currentIndex) {
+		const auto result = collectDigits();
+		if (result.size() == _digitsCountMax) {
+			_codeCollected.fire_copy(result);
+			_currentIndex = _digits.size() - 1;
+		} else {
+			findEmptyAndPerform([&](int i) { _currentIndex = i; });
+		}
+	}
+	unfocusAll(_currentIndex);
 }
 
 } // namespace Ui

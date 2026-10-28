@@ -12,7 +12,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/popup_menu.h"
+
 #include "styles/style_info.h"
+#include "styles/style_layers.h"
 
 namespace Ui {
 
@@ -25,7 +27,9 @@ InviteLinkLabel::InviteLinkLabel(
 	const auto label = CreateChild<FlatLabel>(
 		_outer.get(),
 		std::move(text),
-		createMenu ? st::defaultFlatLabel : st::inviteLinkFieldLabel);
+		createMenu
+			? st::inviteLinkFieldLabelLeft
+			: st::inviteLinkFieldLabel);
 	label->setAttribute(Qt::WA_TransparentForMouseEvents);
 
 	const auto button = createMenu
@@ -33,9 +37,15 @@ InviteLinkLabel::InviteLinkLabel(
 		: (IconButton*)(nullptr);
 
 	_outer->widthValue(
-	) | rpl::start_with_next([=](int width) {
+	) | rpl::on_next([=](int width) {
 		const auto margin = st::inviteLinkFieldMargin;
-		const auto labelWidth = width - margin.left() - margin.right();
+		const auto labelWidth = createMenu
+			? (st::boxWideWidth
+				- st::inviteLinkFieldPadding.left()
+				- st::inviteLinkFieldPadding.right()
+				- margin.left()
+				- margin.right())
+			: (width - margin.left() - margin.right());
 		label->resizeToWidth(labelWidth);
 		label->moveToLeft(
 			createMenu
@@ -48,7 +58,7 @@ InviteLinkLabel::InviteLinkLabel(
 	}, _outer->lifetime());
 
 	_outer->paintRequest(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		auto p = QPainter(_outer.get());
 		p.setPen(Qt::NoPen);
 		p.setBrush(st::filterInputInactiveBg);
@@ -72,7 +82,7 @@ InviteLinkLabel::InviteLinkLabel(
 					&& (static_cast<QMouseEvent*>(event.get())->button()
 						== Qt::RightButton);
 			}) | rpl::to_empty
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			if (_menu) {
 				_menu = nullptr;
 			} else if ((_menu = createMenu())) {

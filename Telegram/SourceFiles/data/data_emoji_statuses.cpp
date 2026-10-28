@@ -53,7 +53,7 @@ EmojiStatuses::EmojiStatuses(not_null<Session*> owner)
 
 	base::timer_each(
 		kRefreshDefaultListEach
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		refreshDefault();
 		refreshChannelDefault();
 	}, _lifetime);
@@ -175,6 +175,11 @@ void EmojiStatuses::registerAutomaticClear(
 			}
 		}
 	}
+}
+
+TimeId EmojiStatuses::automaticClearAt(not_null<PeerData*> peer) const {
+	const auto i = _clearing.find(peer);
+	return (i != end(_clearing)) ? i->second : TimeId();
 }
 
 auto EmojiStatuses::emojiGroupsValue() const -> rpl::producer<Groups> {
@@ -534,7 +539,7 @@ void EmojiStatuses::set(
 	if (peer->isSelf()) {
 		send(MTPaccount_UpdateEmojiStatus(status));
 	} else if (const auto channel = peer->asChannel()) {
-		send(MTPchannels_UpdateEmojiStatus(channel->inputChannel, status));
+		send(MTPchannels_UpdateEmojiStatus(channel->inputChannel(), status));
 	}
 }
 

@@ -46,7 +46,7 @@ void PlayButtonLayout::setState(State state) {
 			if (_callback) _callback();
 		}
 	} else if (_oldState == _nextState) {
-		qSwap(_oldState, _state);
+		std::swap(_oldState, _state);
 		startTransform(_transformBackward ? 0. : 1., _transformBackward ? 1. : 0.);
 		_transformBackward = !_transformBackward;
 	}
@@ -64,7 +64,7 @@ void PlayButtonLayout::paint(QPainter &p, const QBrush &brush) {
 		auto backward = _transformBackward;
 		auto progress = _transformProgress.value(1.);
 		if (from == State::Cancel || (from == State::Pause && to == State::Play)) {
-			qSwap(from, to);
+			std::swap(from, to);
 			backward = !backward;
 		}
 		if (backward) progress = 1. - progress;
@@ -355,7 +355,7 @@ void SettingsButton::setSpeed(float64 speed) {
 	}
 }
 
-void SettingsButton::setQuality(int quality) {
+void SettingsButton::setQuality(Media::VideoQuality quality) {
 	if (_quality != quality) {
 		_quality = quality;
 		update();
@@ -437,13 +437,14 @@ void SettingsButton::prepareFrame() {
 			: u"%1X"_q.arg(rounded / 10);
 		paintBadge(p, text, RectPart::TopLeft, color);
 	}
-	const auto text = (!_quality)
+	const auto height = _quality.height;
+	const auto text = !height
 		? QString()
-		: (_quality > 2000)
+		: (height > 2000)
 		? u"4K"_q
-		: (_quality > 1000)
+		: (height > 1000)
 		? u"FHD"_q
-		: (_quality > 700)
+		: (height > 700)
 		? u"HD"_q
 		: u"SD"_q;
 	if (!text.isEmpty()) {

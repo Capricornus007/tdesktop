@@ -55,6 +55,11 @@ struct DhConfig;
 struct InviteRequest;
 struct StartConferenceInfo;
 
+struct StartOutgoingCallArgs {
+	bool video = false;
+	bool isConfirmed = false;
+};
+
 struct StartGroupCallArgs {
 	enum class JoinConfirm {
 		None,
@@ -80,7 +85,7 @@ public:
 	Instance();
 	~Instance();
 
-	void startOutgoingCall(not_null<UserData*> user, bool video);
+	void startOutgoingCall(not_null<UserData*> user, StartOutgoingCallArgs);
 	void startOrJoinGroupCall(
 		std::shared_ptr<Ui::Show> show,
 		not_null<PeerData*> peer,
@@ -117,6 +122,7 @@ public:
 	bool minimizeCurrentActiveCall();
 	bool toggleFullScreenCurrentActiveCall();
 	bool closeCurrentActiveCall();
+	void hidePanelLayers();
 	[[nodiscard]] auto getVideoCapture(
 		std::optional<QString> deviceId = std::nullopt,
 		bool isScreenCapture = false)
@@ -149,6 +155,8 @@ public:
 
 	[[nodiscard]] FnMut<void()> addAsyncWaiter();
 
+	void registerVideoStream(not_null<GroupCall*> call);
+
 	[[nodiscard]] bool isSharingScreen() const;
 	[[nodiscard]] bool isQuitPrevent();
 
@@ -159,7 +167,10 @@ private:
 	not_null<Media::Audio::Track*> ensureSoundLoaded(const QString &key);
 	void playSoundOnce(const QString &key);
 
-	void createCall(not_null<UserData*> user, CallType type, bool isVideo);
+	void createCall(
+		not_null<UserData*> user,
+		CallType type,
+		StartOutgoingCallArgs);
 	void destroyCall(not_null<Call*> call);
 	void finishConferenceInvitations(const StartConferenceInfo &args);
 
@@ -180,6 +191,7 @@ private:
 	void refreshDhConfig();
 	void refreshServerConfig(not_null<Main::Session*> session);
 	bytes::const_span updateDhConfig(const MTPmessages_DhConfig &data);
+	bool activateUnconfirmedCall(not_null<UserData*> user);
 
 	void destroyCurrentCall(
 		Data::GroupCall *migrateCall = nullptr,
@@ -218,6 +230,10 @@ private:
 	base::flat_map<CallId, ConferenceInvites> _conferenceInvites;
 
 	base::flat_set<std::unique_ptr<crl::semaphore>> _asyncWaiters;
+
+	base::flat_map<
+		not_null<Main::Session*>,
+		std::vector<base::weak_ptr<GroupCall>>> _streams;
 
 };
 

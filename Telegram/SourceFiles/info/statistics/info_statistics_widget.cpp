@@ -65,7 +65,7 @@ Widget::Widget(
 		controller->statisticsTag().contextId,
 		controller->statisticsTag().storyId))) {
 	_inner->showRequests(
-	) | rpl::start_with_next([=](InnerWidget::ShowRequest request) {
+	) | rpl::on_next([=](InnerWidget::ShowRequest request) {
 		if (request.history) {
 			controller->showPeerHistory(
 				request.history.peer,
@@ -88,7 +88,7 @@ Widget::Widget(
 		}
 	}, _inner->lifetime());
 	_inner->scrollToRequests(
-	) | rpl::start_with_next([this](const Ui::ScrollToRequest &request) {
+	) | rpl::on_next([this](const Ui::ScrollToRequest &request) {
 		scrollTo(request);
 	}, _inner->lifetime());
 }
@@ -119,6 +119,14 @@ rpl::producer<bool> Widget::desiredShadowVisibility() const {
 
 void Widget::showFinished() {
 	_inner->showFinished();
+}
+
+void Widget::fillTopBarMenu(const Ui::Menu::MenuCallback &addAction) {
+	_inner->fillMenu(addAction);
+}
+
+rpl::producer<> Widget::topBarMenuFilledChanges() const {
+	return _inner->menuFilledChanges();
 }
 
 std::shared_ptr<ContentMemento> Widget::doCreateMemento() {

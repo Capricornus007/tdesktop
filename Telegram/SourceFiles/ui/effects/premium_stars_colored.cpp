@@ -13,6 +13,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/painter.h"
 #include "ui/rp_widget.h"
 
+#include "styles/style_basic.h"
+
 namespace Ui::Premium {
 namespace {
 
@@ -24,6 +26,7 @@ constexpr auto kLifetimeMin = crl::time(1000);
 constexpr auto kLifetimeMax = 3 * kLifetimeMin;
 constexpr auto kSizeMin = 0.1;
 constexpr auto kSizeMax = 0.15;
+constexpr auto kPauseOnNoPaints = 4;
 
 [[nodiscard]] crl::time ChooseLife(base::BufferedRandom<uint32> &random) {
 	return kLifetimeMin
@@ -68,6 +71,7 @@ private:
 	std::unique_ptr<Text::CustomEmoji> _inner;
 	Ui::Animations::Basic _animation;
 	QImage _frame;
+	int _skippedPaints = 0;
 	int _size = 0;
 
 };
@@ -84,7 +88,13 @@ CollectibleEmoji::CollectibleEmoji(
 , _centerColor(centerColor)
 , _edgeColor(edgeColor)
 , _inner(std::move(inner))
-, _animation(std::move(update))
+, _animation([=] {
+	if (++_skippedPaints > kPauseOnNoPaints) {
+		_animation.stop();
+	} else {
+		update();
+	}
+})
 , _size(size) {
 	fill();
 }
@@ -137,7 +147,7 @@ void CollectibleEmoji::refill(
 }
 
 int CollectibleEmoji::width() {
-	return _inner->width();
+	return st::emojiSize + 2 * st::emojiPadding;
 }
 
 QString CollectibleEmoji::entityData() {
@@ -157,7 +167,10 @@ void CollectibleEmoji::prepareFrame() {
 	auto random = std::optional<base::BufferedRandom<uint32>>();
 	const auto now = crl::now();
 	for (auto &star : _stars) {
-		if (star.deathTime <= now) {
+		// crl::now() is not strictly monotonic everywhere: on Windows it is
+		// built on QueryPerformanceCounter, which steps backwards on some
+		// old machines. A star born "in the future" is restarted.
+		if (star.deathTime <= now || star.birthTime > now) {
 			if (!random) {
 				random.emplace(kStarsCount * 10);
 			}
@@ -207,6 +220,7 @@ void CollectibleEmoji::paint(QPainter &p, const Context &context) {
 		_animation.start();
 	}
 	_inner->paint(p, context);
+	_skippedPaints = 0;
 }
 
 void CollectibleEmoji::unload() {
@@ -226,7 +240,7 @@ bool CollectibleEmoji::readyInDefaultState() {
 ColoredMiniStars::ColoredMiniStars(
 	not_null<Ui::RpWidget*> parent,
 	bool optimizeUpdate,
-	MiniStars::Type type)
+	MiniStarsType type)
 : _ministars(
 	optimizeUpdate
 		? Fn<void(const QRect &)>([=](const QRect &r) {
@@ -239,7 +253,7 @@ ColoredMiniStars::ColoredMiniStars(
 
 ColoredMiniStars::ColoredMiniStars(
 	Fn<void(const QRect &)> update,
-	MiniStars::Type type)
+	MiniStarsType type)
 : _ministars(update, true, type) {
 }
 

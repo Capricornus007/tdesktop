@@ -23,6 +23,8 @@ enum class SharedMediaType : signed char;
 
 namespace Data {
 class ForumTopic;
+class SavedMessages;
+class SavedSublist;
 struct ReactionId;
 } // namespace Data
 
@@ -49,6 +51,9 @@ public:
 	Memento(not_null<PeerData*> peer, Section section);
 	explicit Memento(not_null<Data::ForumTopic*> topic);
 	Memento(not_null<Data::ForumTopic*> topic, Section section);
+	explicit Memento(not_null<Data::SavedSublist*> sublist);
+	Memento(not_null<Data::SavedSublist*> sublist, Section section);
+	explicit Memento(not_null<Data::SavedMessages*> savedMessages);
 	Memento(Settings::Tag settings, Section section);
 	Memento(not_null<PollData*> poll, FullMsgId contextId);
 	Memento(
@@ -82,18 +87,24 @@ public:
 		return _stack.back().get();
 	}
 
-	static Section DefaultSection(not_null<PeerData*> peer);
 	static std::shared_ptr<Memento> Default(not_null<PeerData*> peer);
 
 	~Memento();
 
 private:
+	static Section DefaultSection(not_null<PeerData*> peer);
+
 	static std::vector<std::shared_ptr<ContentMemento>> DefaultStack(
 		not_null<PeerData*> peer,
 		Section section);
 	static std::vector<std::shared_ptr<ContentMemento>> DefaultStack(
 		not_null<Data::ForumTopic*> topic,
 		Section section);
+	static std::vector<std::shared_ptr<ContentMemento>> DefaultStack(
+		not_null<Data::SavedSublist*> sublist,
+		Section section);
+	static std::vector<std::shared_ptr<ContentMemento>> DefaultStack(
+		not_null<Data::SavedMessages*> savedMessages);
 	static std::vector<std::shared_ptr<ContentMemento>> DefaultStack(
 		Settings::Tag settings,
 		Section section);
@@ -110,6 +121,9 @@ private:
 		Section section);
 	static std::shared_ptr<ContentMemento> DefaultContent(
 		not_null<Data::ForumTopic*> topic,
+		Section section);
+	static std::shared_ptr<ContentMemento> DefaultContent(
+		not_null<Data::SavedSublist*> sublist,
 		Section section);
 
 	std::vector<std::shared_ptr<ContentMemento>> _stack;

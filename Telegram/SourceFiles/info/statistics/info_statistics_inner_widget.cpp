@@ -7,17 +7,20 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "info/statistics/info_statistics_inner_widget.h"
 
+#include "api/api_polls.h"
 #include "api/api_statistics.h"
 #include "apiwrap.h"
 #include "base/call_delayed.h"
 #include "base/event_filter.h"
 #include "data/data_peer.h"
+#include "data/data_poll.h"
 #include "data/data_session.h"
 #include "data/data_stories.h"
 #include "data/data_story.h"
 #include "history/history_item.h"
 #include "info/info_controller.h"
 #include "info/info_memento.h"
+#include "info/statistics/info_statistics_export.h"
 #include "info/statistics/info_statistics_list_controllers.h"
 #include "info/statistics/info_statistics_recent_message.h"
 #include "info/statistics/info_statistics_widget.h"
@@ -34,6 +37,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/vertical_list.h"
 #include "ui/toast/toast.h"
 #include "ui/widgets/buttons.h"
+#include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/scroll_area.h"
 #include "ui/wrap/slide_wrap.h"
@@ -93,11 +97,11 @@ void ProcessZoom(
 		return;
 	}
 	widget->zoomRequests(
-	) | rpl::start_with_next([=](float64 x) {
+	) | rpl::on_next([=](float64 x) {
 		d.api->requestZoom(
 			zoomToken,
 			x
-		) | rpl::start_with_next_error_done([=](
+		) | rpl::on_next_error_done([=](
 				const Data::StatisticalGraph &graph) {
 			if (graph.chart) {
 				widget->setZoomedChartData(graph.chart, x, type);
@@ -165,7 +169,7 @@ void FillStatistic(
 			descriptor.api->requestZoom(
 				graphData.zoomToken,
 				0
-			) | rpl::start_with_next_error_done([=, graphPtr = &graphData](
+			) | rpl::on_next_error_done([=, graphPtr = &graphData](
 					const Data::StatisticalGraph &graph) mutable {
 				{
 					// Save the loaded async data to cache.
@@ -287,6 +291,7 @@ void FillStatistic(
 				Type::Bar);
 		}
 	}
+	Statistic::FixCacheForHighDPIChartWidget(content);
 	if (!state->pendingCount) {
 		++state->pendingCount;
 		singlePendingDone();
@@ -393,7 +398,7 @@ void FillOverview(
 		sub->setTextColorOverride(st::windowSubTextFg->c);
 
 		primary->geometryValue(
-		) | rpl::start_with_next([=](const QRect &g) {
+		) | rpl::on_next([=](const QRect &g) {
 			const auto &padding = st::statisticsOverviewSecondValuePadding;
 			second->moveToLeft(
 				rect::right(g) + padding.left(),
@@ -539,7 +544,7 @@ void FillOverview(
 	}
 	container->showChildren();
 	container->sizeValue() | rpl::distinct_until_changed(
-	) | rpl::start_with_next([=](const QSize &s) {
+	) | rpl::on_next([=](const QSize &s) {
 		const auto halfWidth = s.width() / 2;
 		{
 			const auto &p = st::statisticsOverviewValuePadding;
@@ -579,41 +584,40 @@ void FillLoading(
 		: u"stats"_q;
 	auto icon = ::Settings::CreateLottieIcon(
 		content,
-		{ .name = iconName, .sizeOverride = Size(st::changePhoneIconSize) },
+		{ .name = iconName, .sizeOverride = st::normalBoxLottieSize },
 		st::settingsBlockedListIconPadding);
 
 	(
 		std::move(showFinished) | rpl::take(1)
-	) | rpl::start_with_next([animate = std::move(icon.animate)] {
+	) | rpl::on_next([animate = std::move(icon.animate)] {
 		animate(anim::repeat::loop);
 	}, icon.widget->lifetime());
 	content->add(std::move(icon.widget));
 
 	content->add(
-		object_ptr<Ui::CenterWrap<>>(
+		object_ptr<Ui::FlatLabel>(
 			content,
-			object_ptr<Ui::FlatLabel>(
-				content,
-				(type == LoadingType::Boosts)
-					? tr::lng_stats_boosts_loading()
-					: (type == LoadingType::Earn)
-					? tr::lng_stats_earn_loading()
-					: tr::lng_stats_loading(),
-				st::changePhoneTitle)),
-		st::changePhoneTitlePadding + st::boxRowPadding);
+			(type == LoadingType::Boosts)
+				? tr::lng_stats_boosts_loading()
+				: (type == LoadingType::Earn)
+				? tr::lng_stats_earn_loading()
+				: tr::lng_stats_loading(),
+			st::changePhoneTitle),
+		st::changePhoneTitlePadding + st::boxRowPadding,
+		style::al_top);
 
 	content->add(
-		object_ptr<Ui::CenterWrap<>>(
+		object_ptr<Ui::FlatLabel>(
 			content,
-			object_ptr<Ui::FlatLabel>(
-				content,
-				(type == LoadingType::Boosts)
-					? tr::lng_stats_boosts_loading_subtext()
-					: (type == LoadingType::Earn)
-					? tr::lng_stats_earn_loading_subtext()
-					: tr::lng_stats_loading_subtext(),
-				st::statisticsLoadingSubtext)),
-		st::changePhoneDescriptionPadding + st::boxRowPadding);
+			(type == LoadingType::Boosts)
+				? tr::lng_stats_boosts_loading_subtext()
+				: (type == LoadingType::Earn)
+				? tr::lng_stats_earn_loading_subtext()
+				: tr::lng_stats_loading_subtext(),
+			st::statisticsLoadingSubtext),
+		st::changePhoneDescriptionPadding + st::boxRowPadding,
+		style::al_top
+	)->setTryMakeSimilarLines(true);
 
 	Ui::AddSkip(content, st::settingsBlockedListIconPadding.top());
 }
@@ -647,14 +651,15 @@ void InnerWidget::load() {
 		_showFinished.events());
 
 	_showFinished.events(
-	) | rpl::take(1) | rpl::start_with_next([=] {
+	) | rpl::take(1) | rpl::on_next([=] {
 		if (!_contextId && !_storyId) {
 			descriptor.api->request(
-			) | rpl::start_with_done([=] {
+			) | rpl::on_done([=] {
 				_state.stats = Data::AnyStatistics{
 					descriptor.api->channelStats(),
 					descriptor.api->supergroupStats(),
 				};
+				_state.lists = descriptor.api->lists();
 				fill();
 
 			}, lifetime());
@@ -726,11 +731,15 @@ void InnerWidget::fill() {
 		FillOverview(inner, _state.stats, true);
 	}
 	FillStatistic(inner, descriptor, _state.stats, finishLoading);
+	if (_state.stats.message) {
+		fillPollVotesGraph(inner);
+	}
 	const auto &channel = _state.stats.channel;
 	const auto &supergroup = _state.stats.supergroup;
 	if (channel) {
 		fillRecentPosts(inner);
 	} else if (supergroup) {
+		const auto &lists = _state.lists;
 		const auto showPeerInfo = [=](not_null<PeerData*> peer) {
 			_showRequests.fire({ .info = peer->id });
 		};
@@ -740,28 +749,27 @@ void InnerWidget::fill() {
 			Ui::AddSkip(c);
 			Ui::AddSkip(c);
 		};
-		if (!supergroup.topSenders.empty()) {
+		if (!lists.topSenders.empty()) {
 			AddMembersList(
-				{ .topSenders = supergroup.topSenders },
+				{ .topSenders = lists.topSenders },
 				inner,
 				showPeerInfo,
 				descriptor.peer,
 				tr::lng_stats_members_title());
 		}
-		if (!supergroup.topAdministrators.empty()) {
+		if (!lists.topAdministrators.empty()) {
 			addSkip(inner);
 			AddMembersList(
-				{ .topAdministrators
-					= supergroup.topAdministrators },
+				{ .topAdministrators = lists.topAdministrators },
 				inner,
 				showPeerInfo,
 				descriptor.peer,
 				tr::lng_stats_admins_title());
 		}
-		if (!supergroup.topInviters.empty()) {
+		if (!lists.topInviters.empty()) {
 			addSkip(inner);
 			AddMembersList(
-				{ .topInviters = supergroup.topInviters },
+				{ .topInviters = lists.topInviters },
 				inner,
 				showPeerInfo,
 				descriptor.peer,
@@ -786,12 +794,46 @@ void InnerWidget::fill() {
 	}
 }
 
-void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
-	const auto &stats = _state.stats.channel;
-	if (!stats || stats.recentMessageInteractions.empty()) {
+void InnerWidget::fillPollVotesGraph(
+		not_null<Ui::VerticalLayout*> container) {
+	const auto item = _peer->owner().message(_contextId);
+	const auto media = item ? item->media() : nullptr;
+	const auto poll = media ? media->poll() : nullptr;
+	if (!poll || !poll->canViewStats()) {
 		return;
 	}
-	_messagePreviews.reserve(stats.recentMessageInteractions.size());
+	const auto wrap = container->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			container,
+			object_ptr<Ui::VerticalLayout>(container)));
+	wrap->toggle(false, anim::type::instant);
+	const auto widget = wrap->entity()->add(
+		object_ptr<Statistic::ChartWidget>(wrap->entity()),
+		st::statisticsLayerMargins);
+	_peer->session().api().polls().requestStats(
+		_contextId,
+		crl::guard(this, [=](Data::StatisticalGraph graph) {
+			if (!graph.chart) {
+				return;
+			}
+			_state.pollVotesGraph = graph;
+			widget->setChartData(
+				std::move(graph.chart),
+				Statistic::ChartViewType::Linear);
+			widget->setTitle(tr::lng_notification_reactions_poll_votes());
+			Statistic::FixCacheForHighDPIChartWidget(wrap->entity());
+			wrap->toggle(true, anim::type::normal);
+		}),
+		[](QString) {});
+}
+
+void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
+	const auto &stats = _state.stats.channel;
+	const auto &recentPosts = _state.lists.recentMessageInteractions;
+	if (!stats || recentPosts.empty()) {
+		return;
+	}
+	_messagePreviews.reserve(recentPosts.size());
 
 	const auto wrap = container->add(
 		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
@@ -840,7 +882,7 @@ void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
 		_messagePreviews.push_back(raw);
 		raw->show();
 		button->sizeValue(
-		) | rpl::start_with_next([=](const QSize &s) {
+		) | rpl::on_next([=](const QSize &s) {
 			if (!s.isNull()) {
 				raw->setGeometry(Rect(s)
 					- st::statisticsRecentPostButton.padding);
@@ -867,7 +909,7 @@ void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
 
 	constexpr auto kFirstPage = int(10);
 	constexpr auto kPerPage = int(30);
-	const auto max = int(stats.recentMessageInteractions.size());
+	const auto max = int(recentPosts.size());
 	if (_state.recentPostsExpanded) {
 		_state.recentPostsExpanded = std::max(
 			_state.recentPostsExpanded - kPerPage,
@@ -884,10 +926,10 @@ void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
 			buttonWrap->toggle(false, anim::type::instant);
 		}
 		for (auto i = from; i < _state.recentPostsExpanded; i++) {
-			const auto &recent = stats.recentMessageInteractions[i];
+			const auto &recent = recentPosts[i];
 			const auto messageWrap = content->add(
 				object_ptr<Ui::VerticalLayout>(content));
-			auto &data = _peer->owner();
+			const auto &data = _peer->owner();
 			if (recent.messageId) {
 				const auto fullId = FullMsgId(_peer->id, recent.messageId);
 				if (const auto item = data.message(fullId)) {
@@ -924,6 +966,30 @@ void InnerWidget::fillRecentPosts(not_null<Ui::VerticalLayout*> container) {
 	}
 }
 
+rpl::producer<> InnerWidget::menuFilledChanges() const {
+	auto loaded = _loaded.events(
+	) | rpl::filter(rpl::mappers::_1) | rpl::to_empty;
+	return ExportAvailable(_state.stats)
+		? (rpl::single(rpl::empty) | rpl::then(std::move(loaded)))
+		: (std::move(loaded) | rpl::type_erased);
+}
+
+void InnerWidget::fillMenu(const Ui::Menu::MenuCallback &addAction) {
+	if (!ExportAvailable(_state.stats)) {
+		return;
+	}
+	addAction(tr::lng_stats_export(tr::now), crl::guard(this, [=] {
+		ExportToFile(
+			this,
+			_controller->uiShow(),
+			_peer,
+			_state.stats,
+			_state.pollVotesGraph,
+			_contextId,
+			_storyId);
+	}), &st::menuIconExport);
+}
+
 void InnerWidget::saveState(not_null<Memento*> memento) {
 	for (const auto &message : _messagePreviews) {
 		message->saveState(_state);
@@ -957,4 +1023,3 @@ void InnerWidget::showFinished() {
 }
 
 } // namespace Info::Statistics
-

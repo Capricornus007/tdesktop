@@ -27,12 +27,12 @@ MainList::MainList(
 
 	std::move(
 		pinnedLimit
-	) | rpl::start_with_next([=](int limit) {
-		_pinned.setLimit(limit);
+	) | rpl::on_next([=](int limit) {
+		_pinned.setLimit(std::max(limit, 1));
 	}, _lifetime);
 
 	session->changes().realtimeNameUpdates(
-	) | rpl::start_with_next([=](const Data::NameUpdate &update) {
+	) | rpl::on_next([=](const Data::NameUpdate &update) {
 		_all.peerNameChanged(_filterId, update.peer, update.oldFirstLetters);
 	}, _lifetime);
 }
@@ -116,12 +116,21 @@ void MainList::unreadStateChanged(
 		const UnreadState &wasState,
 		const UnreadState &nowState) {
 	const auto useClouded = _cloudUnreadState.known && !loaded();
-	const auto updateCloudUnread = _cloudUnreadState.known && wasState.known;
+	// An entry can go from a known state to an unknown one, for example a
+	// forum channel losing the Forum flag while its own unread count was
+	// not loaded yet. The delta is meaningless then, so leave the cloud
+	// counters alone, like unreadEntryChanged() does.
+	const auto updateCloudUnread = _cloudUnreadState.known
+		&& wasState.known
+		&& nowState.known;
 	const auto notify = !useClouded || wasState.known;
 	const auto notifier = unreadStateChangeNotifier(notify);
 	_unreadState += nowState - wasState;
+	if (_unreadState.chatsMuted > _unreadState.chats
+		|| _unreadState.messagesMuted > _unreadState.messages) {
+		[[maybe_unused]] int a = 0;
+	}
 	if (updateCloudUnread) {
-		Assert(nowState.known);
 		_cloudUnreadState += nowState - wasState;
 		finalizeCloudUnread();
 	}
@@ -144,6 +153,10 @@ void MainList::unreadEntryChanged(
 		_unreadState += state;
 	} else {
 		_unreadState -= state;
+	}
+	if (_unreadState.chatsMuted > _unreadState.chats
+		|| _unreadState.messagesMuted > _unreadState.messages) {
+		[[maybe_unused]] int a = 0;
 	}
 	if (updateCloudUnread) {
 		if (added) {

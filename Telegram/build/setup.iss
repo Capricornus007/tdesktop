@@ -35,19 +35,27 @@ DisableDirPage=no
 DisableProgramGroupPage=no
 WizardStyle=modern
 
+#ifndef MyOutputBaseFilename
+  #if MyBuildTarget == "winarm"
+    #define MyOutputBaseFilename "64Gram-arm64." + MyAppVersionFull
+  #elif MyBuildTarget == "win64"
+    #define MyOutputBaseFilename "64Gram-x64." + MyAppVersionFull
+  #else
+    #define MyOutputBaseFilename "64Gram." + MyAppVersionFull
+  #endif
+#endif
+OutputBaseFilename={#MyOutputBaseFilename}
+
 #if MyBuildTarget == "winarm"
   ArchitecturesAllowed="arm64"
-  OutputBaseFilename=tsetup-arm64.{#MyAppVersionFull}
   #define ArchModulesFolder "arm64"
   AppVerName={#MyAppName} {#MyAppVersion} arm64
 #elif MyBuildTarget == "win64"
   ArchitecturesAllowed="x64compatible"
   ArchitecturesInstallIn64BitMode="x64compatible"
-  OutputBaseFilename=64Gram-setup-x64.{#MyAppVersionFull}
   #define ArchModulesFolder "x64"
   AppVerName={#MyAppName} {#MyAppVersion} 64bit
 #else
-  OutputBaseFilename=64Gram-setup.{#MyAppVersionFull}
   #define ArchModulesFolder "x86"
   AppVerName={#MyAppName} {#MyAppVersion} 32bit
 #endif
@@ -67,7 +75,6 @@ Name: "ua";      MessagesFile: "compiler:Languages\Ukrainian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; OnlyBelowVersion: 0,6.1
 
 [Files]
 Source: "{#ReleasePath}\Telegram.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -81,7 +88,6 @@ Source: "{#ReleasePath}\{#ModulesFolder}\d3d\d3dcompiler_47.dll"; DestDir: "{app
 Name: "{group}\{#MyAppShortName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppShortName}}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#MyAppShortName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppShortName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppShortName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
@@ -114,7 +120,7 @@ var ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
-    ShellExec('', ExpandConstant('{app}\{#MyAppExeName}'), '-cleanup', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{app}\{#MyAppExeName}'), '-cleanup', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 

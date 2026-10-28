@@ -27,13 +27,14 @@ StickersPanelController::StickersPanelController(
 				nullptr,
 				ChatHelpers::TabbedSelectorDescriptor{
 					.show = show,
-					.st = st::storiesComposeControls.tabbed,
+					.st = st::mediaviewEmojiPan,
 					.level = Window::GifPauseReason::Layer,
 					.mode = ChatHelpers::TabbedSelector::Mode::MediaEditor,
 					.features = {
 						.megagroupSet = false,
 						.stickersSettings = false,
 						.openStickerSets = false,
+						.photoButton = true,
 					},
 				}),
 		})) {
@@ -52,6 +53,10 @@ auto StickersPanelController::stickerChosen() const
 	});
 }
 
+rpl::producer<> StickersPanelController::photoRequests() const {
+	return _stickersPanel->selector()->photoRequests();
+}
+
 rpl::producer<bool> StickersPanelController::panelShown() const {
 	return _stickersPanel->shownValue();
 }
@@ -60,7 +65,7 @@ void StickersPanelController::setShowRequestChanges(
 		rpl::producer<ShowRequest> &&showRequest) {
 	std::move(
 		showRequest
-	) | rpl::start_with_next([=](ShowRequest show) {
+	) | rpl::on_next([=](ShowRequest show) {
 		if (show == ShowRequest::ToggleAnimated) {
 			_stickersPanel->toggleAnimated();
 			_stickersPanel->raise();
@@ -79,7 +84,7 @@ void StickersPanelController::setMoveRequestChanges(
 		rpl::producer<QPoint> &&moveRequest) {
 	std::move(
 		moveRequest
-	) | rpl::start_with_next([=](const QPoint &point) {
+	) | rpl::on_next([=](const QPoint &point) {
 		_stickersPanel->moveBottomRight(
 			point.y(),
 			point.x() + _stickersPanel->width() / 2);

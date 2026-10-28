@@ -7,25 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "ui/layers/box_content.h"
-#include "base/timer.h"
 #include "data/stickers/data_stickers.h"
+#include "ui/layers/box_content.h"
 #include "ui/rect_part.h"
-
-namespace Window {
-class SessionController;
-} // namespace Window
-
-namespace Ui {
-class PlainShadow;
-} // namespace Ui
 
 namespace Data {
 class StickersSet;
 } // namespace Data
 
 namespace ChatHelpers {
-struct FileChosen;
 class Show;
 } // namespace ChatHelpers
 
@@ -64,15 +54,17 @@ public:
 		QWidget*,
 		std::shared_ptr<ChatHelpers::Show> show,
 		const StickerSetIdentifier &set,
-		Data::StickersType type);
+		Data::StickersType type,
+		DocumentId previewDocumentId = 0);
 	StickerSetBox(
 		QWidget*,
 		std::shared_ptr<ChatHelpers::Show> show,
 		not_null<Data::StickersSet*> set);
 
-	static QPointer<Ui::BoxContent> Show(
+	static base::weak_qptr<Ui::BoxContent> Show(
 		std::shared_ptr<ChatHelpers::Show> show,
-		not_null<DocumentData*> document);
+		not_null<DocumentData*> document,
+		DocumentId previewDocumentId = 0);
 
 protected:
 	void prepare() override;
@@ -97,5 +89,6 @@ private:
 
 	class Inner;
 	QPointer<Inner> _inner;
+	DocumentId _previewDocumentId = 0;
 
 };

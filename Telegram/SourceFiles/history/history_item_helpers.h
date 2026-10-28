@@ -66,7 +66,6 @@ enum class MediaCheckResult {
 	Unsupported,
 	Empty,
 	HasExpiredMediaTimeToLive,
-	HasUnsupportedTimeToLive,
 	HasStoryMention,
 };
 [[nodiscard]] MediaCheckResult CheckMessageMedia(
@@ -84,6 +83,23 @@ using OnStackUsers = std::array<UserData*, kMaxUnreadReactions>;
 void CheckReactionNotificationSchedule(
 	not_null<HistoryItem*> item,
 	const OnStackUsers &wasUsers);
+[[nodiscard]] PollData *LookupNotificationPoll(
+	not_null<const HistoryItem*> item);
+void CheckPollVoteNotificationSchedule(
+	not_null<HistoryItem*> item,
+	const std::vector<not_null<PeerData*>> &wasRecentVoters);
+
+// History::destroyMessage clears the notification manager for a destroyed
+// item only when this accepts it, so it has to stay a superset of every
+// scheduler guard that can accept a !isHistoryEntry() item - today only
+// CheckPollVoteNotificationSchedule, whose own creator() check is
+// deliberately not repeated here. An item some scheduler accepts but this
+// rejects stays behind in Manager::_queuedNotifications and in
+// Notification::_item, raw pointers that only Manager::doClearFromItem
+// unlinks.
+[[nodiscard]] bool CanHoldItemNotification(
+	not_null<const HistoryItem*> item);
+
 [[nodiscard]] MessageFlags NewForwardedFlags(
 	not_null<PeerData*> peer,
 	PeerId from,
@@ -122,6 +138,29 @@ void RequestDependentMessageStory(
 	not_null<History*> history,
 	FullReplyTo replyTo);
 [[nodiscard]] bool LookupReplyIsTopicPost(HistoryItem *replyTo);
+[[nodiscard]] bool CanReplyToEphemeral(not_null<const HistoryItem*> item);
+[[nodiscard]] bool IsAnchoredEphemeral(not_null<const HistoryItem*> item);
+
+struct ForwardRange {
+	std::vector<not_null<HistoryItem*>> items;
+	bool fromEphemeral = false;
+};
+[[nodiscard]] std::vector<ForwardRange> CollectForwardRanges(
+	const std::vector<not_null<HistoryItem*>> &items);
+[[nodiscard]] QVector<MTPint> ForwardRangeIds(
+	not_null<Main::Session*> session,
+	const ForwardRange &range);
+[[nodiscard]] bool ShowEphemeralReplyTextOnlyError(
+	std::shared_ptr<ChatHelpers::Show> show,
+	not_null<Main::Session*> session,
+	FullMsgId replyToId);
+void StripEphemeralReply(
+	not_null<Main::Session*> session,
+	FullReplyTo &replyTo);
+void ConfirmDeleteSelectedEphemeral(
+	std::shared_ptr<ChatHelpers::Show> show,
+	std::vector<not_null<HistoryItem*>> items,
+	Fn<void()> confirmed);
 
 struct SendingErrorRequest {
 	MsgId topicRootId = 0;
@@ -130,6 +169,8 @@ struct SendingErrorRequest {
 	const TextWithTags *text = nullptr;
 	int messagesCount = 0;
 	bool ignoreSlowmodeCountdown = false;
+	bool richMessage = false;
+	bool ignoreRestrictions = false;
 };
 [[nodiscard]] int ComputeSendingMessagesCount(
 	not_null<History*> history,
@@ -149,6 +190,10 @@ struct SendPaymentDetails {
 	not_null<PeerData*> peer,
 	int messagesCount);
 
+[[nodiscard]] bool SuggestPaymentDataReady(
+	not_null<PeerData*> peer,
+	SuggestOptions suggest);
+
 struct PaidConfirmStyles {
 	const style::FlatLabel *label = nullptr;
 	const style::Checkbox *checkbox = nullptr;
@@ -158,34 +203,37 @@ void ShowSendPaidConfirm(
 	not_null<PeerData*> peer,
 	SendPaymentDetails details,
 	Fn<void()> confirmed,
-	PaidConfirmStyles styles = {});
+	PaidConfirmStyles styles = {},
+	int suggestStarsPrice = 0);
 void ShowSendPaidConfirm(
 	std::shared_ptr<Main::SessionShow> show,
 	not_null<PeerData*> peer,
 	SendPaymentDetails details,
 	Fn<void()> confirmed,
-	PaidConfirmStyles styles = {});
+	PaidConfirmStyles styles = {},
+	int suggestStarsPrice = 0);
 void ShowSendPaidConfirm(
 	std::shared_ptr<Main::SessionShow> show,
 	const std::vector<not_null<PeerData*>> &peers,
 	SendPaymentDetails details,
 	Fn<void()> confirmed,
-	PaidConfirmStyles styles = {});
+	PaidConfirmStyles styles = {},
+	int suggestStarsPrice = 0);
 
 class SendPaymentHelper final {
 public:
 	[[nodiscard]] bool check(
 		not_null<Window::SessionNavigation*> navigation,
 		not_null<PeerData*> peer,
+		Api::SendOptions options,
 		int messagesCount,
-		int starsApproved,
 		Fn<void(int)> resend,
 		PaidConfirmStyles styles = {});
 	[[nodiscard]] bool check(
 		std::shared_ptr<Main::SessionShow> show,
 		not_null<PeerData*> peer,
+		Api::SendOptions options,
 		int messagesCount,
-		int starsApproved,
 		Fn<void(int)> resend,
 		PaidConfirmStyles styles = {});
 
@@ -222,13 +270,11 @@ private:
 	not_null<PeerData*> peer,
 	MsgId msgId,
 	FullMsgId returnToId = FullMsgId(),
-	TextWithEntities highlightPart = {},
-	int highlightPartOffsetHint = 0);
+	MessageHighlightId highlight = {});
 [[nodiscard]] ClickHandlerPtr JumpToMessageClickHandler(
 	not_null<HistoryItem*> item,
 	FullMsgId returnToId = FullMsgId(),
-	TextWithEntities highlightPart = {},
-	int highlightPartOffsetHint = 0);
+	MessageHighlightId highlight = {});
 [[nodiscard]] ClickHandlerPtr JumpToStoryClickHandler(
 	not_null<Data::Story*> story);
 ClickHandlerPtr JumpToStoryClickHandler(

@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/platform/win/base_windows_shlobj_h.h"
 #include "base/platform/win/base_windows_winrt.h"
 #include "base/call_delayed.h"
+#include "core/version.h"
 #include "ui/boxes/confirm_box.h"
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
@@ -26,6 +27,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "window/window_controller.h"
 #include "core/crash_reports.h"
+#include "core/version.h"
 
 #include <QtCore/QOperatingSystemVersion>
 #include <QtWidgets/QApplication>
@@ -68,6 +70,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #define WM_NCPOINTERUPDATE 0x0241
 #define WM_NCPOINTERDOWN 0x0242
 #define WM_NCPOINTERUP 0x0243
+#endif
+
+// Windows 10 version 2004 and later. Older systems only have WDA_MONITOR,
+// which leaves the window in the capture but paints it black.
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
 #endif
 
 using namespace ::Platform;
@@ -367,6 +375,9 @@ void start() {
 } // namespace ThirdParty
 
 void start() {
+	const auto supported = base::WinRT::Supported();
+	LOG(("WinRT Supported: %1").arg(Logs::b(supported)));
+
 	// https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/setlocale-wsetlocale#utf-8-support
 	setlocale(LC_ALL, ".UTF8");
 
@@ -512,6 +523,28 @@ void WriteCrashDumpDetails() {
 #endif // TDESKTOP_DISABLE_CRASH_REPORTS
 }
 
+bool ScreenshotProtectionSupported() {
+	return true;
+}
+
+bool AmbientScreenshotProtectionSupported() {
+	// Display affinity hides the window from the viewer, not just captures.
+	return false;
+}
+
+void SetWindowScreenshotProtection(not_null<QWidget*> window, bool enabled) {
+	const auto handle = window->internalWinId();
+	if (!handle) {
+		return;
+	}
+	const auto hwnd = reinterpret_cast<HWND>(handle);
+	if (!enabled) {
+		SetWindowDisplayAffinity(hwnd, WDA_NONE);
+	} else if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
+		SetWindowDisplayAffinity(hwnd, WDA_MONITOR);
+	}
+}
+
 void SetWindowPriority(not_null<QWidget*> window, uint32 priority) {
 	const auto hwnd = reinterpret_cast<HWND>(window->winId());
 	Assert(hwnd != nullptr);
@@ -533,6 +566,18 @@ void ActivateOtherProcess(uint64 processId, uint64 windowId) {
 		::SetForegroundWindow(hwnd);
 		::SetFocus(hwnd);
 	}
+}
+
+bool WaitForProcessExit(uint64 processId, crl::time timeout) {
+	const auto process = ::OpenProcess(
+		SYNCHRONIZE,
+		FALSE,
+		DWORD(processId));
+	if (!process) {
+		return (::GetLastError() == ERROR_INVALID_PARAMETER);
+	}
+	const auto guard = gsl::finally([&] { ::CloseHandle(process); });
+	return (::WaitForSingleObject(process, DWORD(timeout)) == WAIT_OBJECT_0);
 }
 
 } // namespace Platform
@@ -667,6 +712,36 @@ QImage DefaultApplicationIcon() {
 	return Window::Logo();
 }
 
+void LaunchMaps(const Data::LocationPoint &point, Fn<void()> fail) {
+	const auto aar = base::WinRT::TryCreateInstance<
+		IApplicationAssociationRegistration
+	>(CLSID_ApplicationAssociationRegistration);
+	if (!aar) {
+		fail();
+		return;
+	}
+
+	auto handler = base::CoTaskMemString();
+	const auto result = aar->QueryCurrentDefault(
+		L"geo",
+		AT_URLPROTOCOL,
+		AL_EFFECTIVE,
+		handler.put());
+	if (FAILED(result)
+		|| !handler
+		|| !handler.data()
+		|| std::wstring(handler.data()) == L"geo") {
+		fail();
+		return;
+	}
+
+	const auto url = u"geo:%1,%2"_q;
+	if (!QDesktopServices::openUrl(
+		url.arg(point.latAsString(), point.lonAsString()))) {
+		fail();
+	}
+}
+
 } // namespace Platform
 
 void psSendToMenu(bool send, bool silent) {
@@ -674,35 +749,9 @@ void psSendToMenu(bool send, bool silent) {
 		send,
 		silent,
 		FOLDERID_SendTo,
-		L"-sendpath",
+		L"--",
 		L"Telegram send to link.\n"
 		"You can disable send to menu item in Telegram settings.");
-}
-
-bool psLaunchMaps(const Data::LocationPoint &point) {
-	const auto aar = base::WinRT::TryCreateInstance<
-		IApplicationAssociationRegistration
-	>(CLSID_ApplicationAssociationRegistration);
-	if (!aar) {
-		return false;
-	}
-
-	auto handler = base::CoTaskMemString();
-	const auto result = aar->QueryCurrentDefault(
-		L"bingmaps",
-		AT_URLPROTOCOL,
-		AL_EFFECTIVE,
-		handler.put());
-	if (FAILED(result)
-		|| !handler
-		|| !handler.data()
-		|| std::wstring(handler.data()) == L"bingmaps") {
-		return false;
-	}
-
-	const auto url = u"bingmaps:?lvl=16&collection=point.%1_%2_Point"_q;
-	return QDesktopServices::openUrl(
-		url.arg(point.latAsString()).arg(point.lonAsString()));
 }
 
 // Stub while we still support Windows 7.

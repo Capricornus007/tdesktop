@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_credits.h"
 #include "base/unixtime.h"
 #include "boxes/send_credits_box.h"
+#include "boxes/star_gift_box.h"
 #include "data/components/credits.h"
 #include "data/data_credits.h"
 #include "data/data_photo.h"
@@ -46,56 +47,77 @@ void ProcessCreditsPayment(
 		QPointer<QWidget> fireworks,
 		std::shared_ptr<CreditsFormData> form,
 		Fn<void(CheckoutResult)> maybeReturnToBot) {
-	const auto done = [=](Settings::SmallBalanceResult result) {
+	const auto hasBadResult = [=](Settings::SmallBalanceResult result) {
 		if (result == Settings::SmallBalanceResult::Blocked) {
 			if (const auto onstack = maybeReturnToBot) {
 				onstack(CheckoutResult::Failed);
 			}
-			return;
+			return true;
 		} else if (result == Settings::SmallBalanceResult::Cancelled) {
 			if (const auto onstack = maybeReturnToBot) {
 				onstack(CheckoutResult::Cancelled);
 			}
-			return;
-		} else if (form->starGiftForm
-			|| IsPremiumForStarsInvoice(form->id)) {
-			const auto done = [=](std::optional<QString> error) {
-				const auto onstack = maybeReturnToBot;
-				if (error) {
-					if (*error == u"STARGIFT_USAGE_LIMITED"_q) {
-						if (form->starGiftLimitedCount) {
-							show->showToast({
-								.title = tr::lng_gift_sold_out_title(
-									tr::now),
-								.text = tr::lng_gift_sold_out_text(
-									tr::now,
-									lt_count_decimal,
-									form->starGiftLimitedCount,
-									Ui::Text::RichLangValue),
-							});
-						} else {
-							show->showToast(
-								tr::lng_gift_sold_out_title(tr::now));
-						}
-					} else {
-						show->showToast(*error);
-					}
-					if (onstack) {
-						onstack(CheckoutResult::Failed);
-					}
-				} else if (onstack) {
-					onstack(CheckoutResult::Paid);
-				}
-			};
-			Ui::SendStarsForm(&show->session(), form, done);
+			return true;
+		}
+		return false;
+	};
+	const auto done = [=](Settings::SmallBalanceResult result) {
+		if (hasBadResult(result)) {
 			return;
 		}
+		const auto done = [=](std::optional<QString> error) {
+			const auto onstack = maybeReturnToBot;
+			if (error) {
+				if (*error == u"STARGIFT_USAGE_LIMITED"_q) {
+					if (form->starGiftLimitedCount) {
+						show->showToast({
+							.title = tr::lng_gift_sold_out_title(
+								tr::now),
+							.text = tr::lng_gift_sold_out_text(
+								tr::now,
+								lt_count_decimal,
+								form->starGiftLimitedCount,
+								tr::rich),
+						});
+					} else {
+						show->showToast(
+							tr::lng_gift_sold_out_title(tr::now));
+					}
+				} else if (*error == u"STARGIFT_USER_USAGE_LIMITED"_q) {
+					show->showToast({
+						.text = tr::lng_gift_sent_finished(
+							tr::now,
+							lt_count,
+							std::max(form->starGiftPerUserLimit, 1),
+							tr::rich),
+					});
+				} else if (!Ui::ShowGiftErrorToast(show, *error)) {
+					show->showToast(*error);
+				}
+				if (onstack) {
+					onstack(CheckoutResult::Failed);
+				}
+			} else if (onstack) {
+				onstack(CheckoutResult::Paid);
+			}
+		};
+		Ui::SendStarsForm(&show->session(), form, done);
+	};
+	using namespace Settings;
+	auto source = Ui::SmallBalanceSourceFromForm(form);
+	if (form->starGiftForm || IsPremiumForStarsInvoice(form->id)) {
+		const auto credits = form->invoice.credits;
+		MaybeRequestBalanceIncrease(show, credits, source, done);
+	} else {
 		const auto unsuccessful = std::make_shared<bool>(true);
 		const auto box = show->show(Box(
 			Ui::SendCreditsBox,
 			form,
-			[=] {
+			[=](Settings::SmallBalanceResult result) {
 				*unsuccessful = false;
+				if (hasBadResult(result)) {
+					return;
+				}
 				if (const auto widget = fireworks.data()) {
 					Ui::StartFireworks(widget);
 				}
@@ -103,7 +125,7 @@ void ProcessCreditsPayment(
 					onstack(CheckoutResult::Paid);
 				}
 			}));
-		box->boxClosing() | rpl::start_with_next([=] {
+		box->boxClosing() | rpl::on_next([=] {
 			crl::on_main([=] {
 				if (*unsuccessful) {
 					if (const auto onstack = maybeReturnToBot) {
@@ -112,15 +134,7 @@ void ProcessCreditsPayment(
 				}
 			});
 		}, box->lifetime());
-	};
-	using namespace Settings;
-	const auto starGift = std::get_if<InvoiceStarGift>(&form->id.value);
-	auto source = !starGift
-		? SmallBalanceSource(SmallBalanceBot{ .botId = form->botId })
-		: SmallBalanceSource(SmallBalanceStarGift{
-			.recipientId = starGift->recipient->id,
-		});
-	MaybeRequestBalanceIncrease(show, form->invoice.credits, source, done);
+	}
 }
 
 void ProcessCreditsReceipt(
@@ -147,26 +161,30 @@ void ProcessCreditsReceipt(
 }
 
 Fn<void(NonPanelPaymentForm)> ProcessNonPanelPaymentFormFactory(
-		not_null<Window::SessionController*> controller,
+		base::weak_ptr<Window::SessionController> controller,
 		Fn<void(CheckoutResult)> maybeReturnToBot) {
 	return [=](NonPanelPaymentForm form) {
+		const auto strong = controller.get();
+		if (!strong) {
+			return;
+		}
 		using CreditsFormDataPtr = std::shared_ptr<CreditsFormData>;
 		using CreditsReceiptPtr = std::shared_ptr<CreditsReceiptData>;
 		v::match(form, [&](const CreditsFormDataPtr &form) {
 			ProcessCreditsPayment(
-				controller->uiShow(),
-				controller->content().get(),
+				strong->uiShow(),
+				strong->content().get(),
 				form,
 				maybeReturnToBot);
-			controller->window().activate();
+			strong->window().activate();
 		}, [&](const CreditsReceiptPtr &receipt) {
-			ProcessCreditsReceipt(controller, receipt, maybeReturnToBot);
+			ProcessCreditsReceipt(strong, receipt, maybeReturnToBot);
 		}, [](RealFormPresentedNotification) {});
 	};
 }
 
 Fn<void(NonPanelPaymentForm)> ProcessNonPanelPaymentFormFactory(
-		not_null<Window::SessionController*> controller,
+		base::weak_ptr<Window::SessionController> controller,
 		not_null<HistoryItem*> item) {
 	return IsCreditsInvoice(item)
 		? ProcessNonPanelPaymentFormFactory(controller)

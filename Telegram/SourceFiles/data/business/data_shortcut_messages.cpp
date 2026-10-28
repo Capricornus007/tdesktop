@@ -54,6 +54,7 @@ constexpr auto kRequestTimeLimit = 60 * crl::time(1000);
 			data.vid(),
 			data.vfrom_id() ? *data.vfrom_id() : MTPPeer(),
 			data.vpeer_id(),
+			data.vsaved_peer_id() ? *data.vsaved_peer_id() : MTPPeer(),
 			data.vreply_to() ? *data.vreply_to() : MTPMessageReplyHeader(),
 			data.vdate(),
 			data.vaction(),
@@ -66,11 +67,13 @@ constexpr auto kRequestTimeLimit = 60 * crl::time(1000);
 			data.vid(),
 			data.vfrom_id() ? *data.vfrom_id() : MTPPeer(),
 			MTPint(), // from_boosts_applied
+			MTPstring(), // from_rank
 			data.vpeer_id(),
 			data.vsaved_peer_id() ? *data.vsaved_peer_id() : MTPPeer(),
 			data.vfwd_from() ? *data.vfwd_from() : MTPMessageFwdHeader(),
 			MTP_long(data.vvia_bot_id().value_or_empty()),
 			MTP_long(data.vvia_business_bot_id().value_or_empty()),
+			data.vguestchat_via_from() ? *data.vguestchat_via_from() : MTPPeer(),
 			data.vreply_to() ? *data.vreply_to() : MTPMessageReplyHeader(),
 			data.vdate(),
 			data.vmessage(),
@@ -92,7 +95,15 @@ constexpr auto kRequestTimeLimit = 60 * crl::time(1000);
 			MTP_long(data.veffect().value_or_empty()),
 			(data.vfactcheck() ? *data.vfactcheck() : MTPFactCheck()),
 			MTP_int(data.vreport_delivery_until_date().value_or_empty()),
-			MTP_long(data.vpaid_message_stars().value_or_empty()));
+			MTP_long(data.vpaid_message_stars().value_or_empty()),
+			(data.vsuggested_post()
+				? *data.vsuggested_post()
+				: MTPSuggestedPost()),
+			MTP_int(data.vschedule_repeat_period().value_or_empty()),
+			MTP_string(qs(data.vsummary_from_language().value_or_empty())),
+			(data.vrich_message()
+				? *data.vrich_message()
+				: MTPRichMessage()));
 	});
 }
 
@@ -109,7 +120,7 @@ ShortcutMessages::ShortcutMessages(not_null<Session*> owner)
 	owner->itemRemoved(
 	) | rpl::filter([](not_null<const HistoryItem*> item) {
 		return item->isBusinessShortcut();
-	}) | rpl::start_with_next([=](not_null<const HistoryItem*> item) {
+	}) | rpl::on_next([=](not_null<const HistoryItem*> item) {
 		remove(item);
 	}, _lifetime);
 }
@@ -189,9 +200,10 @@ void ShortcutMessages::mergeMessagesFromTo(
 			destroy.emplace(item.get());
 		}
 	}
-	for (const auto &item : destroy) {
-		item->destroy();
-	}
+	_session->data().destroyMessagesWithCacheCleanup(
+		std::vector<not_null<HistoryItem*>>(
+			begin(destroy),
+			end(destroy)));
 	_data.remove(fromId);
 
 	cancelRequest(fromId);
@@ -334,21 +346,20 @@ void ShortcutMessages::apply(
 	if (!shortcutId) {
 		return;
 	}
-	auto i = _data.find(shortcutId);
+	const auto i = _data.find(shortcutId);
 	if (i == end(_data)) {
 		return;
 	}
+	auto items = std::vector<not_null<HistoryItem*>>();
+	items.reserve(update.vmessages().v.size());
 	for (const auto &id : update.vmessages().v) {
 		const auto &list = i->second;
 		const auto j = list.itemById.find(id.v);
 		if (j != end(list.itemById)) {
-			j->second->destroy();
-			i = _data.find(shortcutId);
-			if (i == end(_data)) {
-				break;
-			}
+			items.push_back(j->second);
 		}
 	}
+	_session->data().destroyMessagesWithCacheCleanup(items);
 	_updates.fire_copy(shortcutId);
 	updateCount(shortcutId);
 
@@ -361,10 +372,14 @@ void ShortcutMessages::apply(const MTPDupdateDeleteQuickReply &update) {
 	if (!shortcutId) {
 		return;
 	}
-	auto i = _data.find(shortcutId);
-	while (i != end(_data) && !i->second.itemById.empty()) {
-		i->second.itemById.back().second->destroy();
-		i = _data.find(shortcutId);
+	const auto i = _data.find(shortcutId);
+	if (i != end(_data)) {
+		auto items = std::vector<not_null<HistoryItem*>>();
+		items.reserve(i->second.itemById.size());
+		for (const auto &entry : i->second.itemById) {
+			items.push_back(entry.second);
+		}
+		_session->data().destroyMessagesWithCacheCleanup(items);
 	}
 	_updates.fire_copy(shortcutId);
 	if (_data.contains(shortcutId)) {
@@ -384,7 +399,7 @@ void ShortcutMessages::apply(
 	auto &list = i->second;
 	const auto j = list.itemById.find(id);
 	if (j != end(list.itemById) || !IsServerMsgId(id)) {
-		local->destroy();
+		_session->data().destroyMessageWithCacheCleanup(local);
 	} else {
 		Assert(!list.itemById.contains(local->id));
 		local->setRealId(localMessageId(id));
@@ -407,7 +422,7 @@ void ShortcutMessages::removeSending(not_null<HistoryItem*> item) {
 	Expects(item->isSending() || item->hasFailed());
 	Expects(item->isBusinessShortcut());
 
-	item->destroy();
+	_session->data().destroyMessageWithCacheCleanup(item);
 }
 
 rpl::producer<> ShortcutMessages::updates(BusinessShortcutId shortcutId) {
@@ -557,15 +572,16 @@ void ShortcutMessages::editShortcut(
 }
 
 void ShortcutMessages::removeShortcut(BusinessShortcutId shortcutId) {
-	auto i = _data.find(shortcutId);
-	while (i != end(_data)) {
-		if (i->second.items.empty()) {
-			_data.erase(i);
-		} else {
-			i->second.items.front()->destroy();
+	const auto i = _data.find(shortcutId);
+	if (i != end(_data)) {
+		auto items = std::vector<not_null<HistoryItem*>>();
+		items.reserve(i->second.items.size());
+		for (const auto &item : i->second.items) {
+			items.push_back(item.get());
 		}
-		i = _data.find(shortcutId);
+		_session->data().destroyMessagesWithCacheCleanup(items);
 	}
+	_data.remove(shortcutId);
 	_shortcuts.list.remove(shortcutId);
 	_shortcutIdChanges.fire({ shortcutId, 0 });
 
@@ -656,12 +672,7 @@ HistoryItem *ShortcutMessages::append(
 			if (data.is_edit_hide()) {
 				existing->applyEdition(HistoryMessageEdition(_session, data));
 			} else {
-				existing->updateSentContent({
-					qs(data.vmessage()),
-					Api::EntitiesFromMTP(
-						_session,
-						data.ventities().value_or_empty())
-				}, data.vmedia());
+				existing->updateSentContent(data);
 				existing->updateReplyMarkup(
 					HistoryMessageMarkupData(data.vreply_markup()));
 				existing->updateForwardedInfo(data.vfwd_from());
@@ -710,11 +721,10 @@ void ShortcutMessages::updated(
 		BusinessShortcutId shortcutId,
 		const base::flat_set<not_null<HistoryItem*>> &added,
 		const base::flat_set<not_null<HistoryItem*>> &clear) {
-	if (!clear.empty()) {
-		for (const auto &item : clear) {
-			item->destroy();
-		}
-	}
+	_session->data().destroyMessagesWithCacheCleanup(
+		std::vector<not_null<HistoryItem*>>(
+			begin(clear),
+			end(clear)));
 	const auto i = _data.find(shortcutId);
 	if (i != end(_data)) {
 		sort(i->second);

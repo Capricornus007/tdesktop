@@ -12,7 +12,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Profile {
 
-CoverDropArea::CoverDropArea(QWidget *parent, const QString &title, const QString &subtitle) : TWidget(parent)
+CoverDropArea::CoverDropArea(
+	QWidget *parent,
+	const QString &title,
+	const QString &subtitle)
+: RpWidget(parent)
 , _title(title)
 , _subtitle(subtitle)
 , _titleWidth(st::profileDropAreaTitleFont->width(_title))
@@ -57,7 +61,7 @@ void CoverDropArea::paintEvent(QPaintEvent *e) {
 	if (height() < st::profileDropAreaPadding.top() + st::profileDropAreaPadding.bottom()) return;
 
 	auto border = st::profileDropAreaBorderWidth;
-	auto &borderFg = st::profileDropAreaBorderFg;
+	const auto &borderFg = st::profileDropAreaBorderFg;
 	auto inner = rect().marginsRemoved(st::profileDropAreaPadding);
 	p.fillRect(inner.x(), inner.y(), inner.width(), border, borderFg);
 	p.fillRect(inner.x(), inner.y() + inner.height() - border, inner.width(), border, borderFg);

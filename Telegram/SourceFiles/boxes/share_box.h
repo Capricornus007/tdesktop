@@ -71,6 +71,9 @@ struct ShareBoxStyleOverrides {
 };
 [[nodiscard]] ShareBoxStyleOverrides DarkShareBoxStyle();
 
+void FastShareMessageToSelf(
+	std::shared_ptr<Main::SessionShow> show,
+	not_null<HistoryItem*> item);
 void FastShareMessage(
 	std::shared_ptr<Main::SessionShow> show,
 	not_null<HistoryItem*> item,
@@ -112,7 +115,8 @@ public:
 		not_null<History*> history,
 		MessageIdsList msgIds,
 		std::optional<TimeId> videoTimestamp = {},
-		bool no_quote = false);
+		bool no_quote = false,
+		FnMut<void()>&& successCallback = nullptr);
 
 	struct Descriptor {
 		not_null<Main::Session*> session;
@@ -124,6 +128,7 @@ public:
 		rpl::producer<QString> copyLinkText;
 		rpl::producer<QString> titleOverride;
 		ShareBoxStyleOverrides st;
+		rpl::producer<QString> title;
 		std::optional<TimeId> videoTimestamp;
 		struct {
 			int sendersCount = 0;

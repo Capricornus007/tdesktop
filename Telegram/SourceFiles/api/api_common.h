@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_drafts.h"
 
 class History;
+class PhotoData;
 
 namespace Data {
 class Thread;
@@ -19,18 +20,26 @@ namespace Api {
 
 inline constexpr auto kScheduledUntilOnlineTimestamp = TimeId(0x7FFFFFFE);
 
+[[nodiscard]] MTPSuggestedPost SuggestToMTP(SuggestOptions suggest);
+
 struct SendOptions {
 	uint64 price = 0;
 	PeerData *sendAs = nullptr;
 	TimeId scheduled = 0;
+	TimeId scheduleRepeatPeriod = 0;
 	BusinessShortcutId shortcutId = 0;
 	EffectId effectId = 0;
+	QByteArray stakeSeedHash;
+	int64 stakeNanoTon = 0;
 	int starsApproved = 0;
 	bool silent = false;
 	bool handleSupportSwitch = false;
 	bool invertCaption = false;
 	bool hideViaBot = false;
+	bool mediaSpoiler = false;
+	bool welcomeTemplate = false;
 	crl::time ttlSeconds = 0;
+	SuggestOptions suggest;
 
 	friend inline bool operator==(
 		const SendOptions &,
@@ -77,6 +86,18 @@ struct RemoteFileInfo {
 	std::optional<MTPInputFile> thumb;
 	std::optional<MTPInputPhoto> videoCover;
 	std::vector<MTPInputDocument> attachedStickers;
+	bool forceFile = false;
+
+};
+
+struct VideoCoverEdit {
+	PhotoData *photo = nullptr;
+	bool cleared = false;
+	Fn<void(Fn<void(PhotoData*)> done)> refresh;
+
+	[[nodiscard]] explicit operator bool() const {
+		return (photo != nullptr) || cleared;
+	}
 };
 
 } // namespace Api

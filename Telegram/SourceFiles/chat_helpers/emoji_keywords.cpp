@@ -523,7 +523,7 @@ void EmojiKeywords::handleSessionChanges() {
 	Core::App().domain().activeSessionValue( // #TODO multi someSessionValue
 	) | rpl::map([](Main::Session *session) {
 		return session ? &session->api() : nullptr;
-	}) | rpl::start_with_next([=](ApiWrap *api) {
+	}) | rpl::on_next([=](ApiWrap *api) {
 		apiChanged(api);
 	}, _lifetime);
 }
@@ -536,7 +536,7 @@ void EmojiKeywords::apiChanged(ApiWrap *api) {
 			) | rpl::filter([=] {
 				// Refresh with the suggested language if we already were asked.
 				return !_data.empty();
-			}) | rpl::start_with_next([=] {
+			}) | rpl::on_next([=] {
 				refresh();
 			}, _suggestedChangeLifetime);
 		}));
@@ -672,7 +672,7 @@ std::vector<Result> EmojiKeywords::PrioritizeRecent(
 }
 
 std::vector<Result> EmojiKeywords::ApplyVariants(std::vector<Result> list) {
-	auto &settings = Core::App().settings();
+	const auto &settings = Core::App().settings();
 	for (auto &item : list) {
 		item.emoji = settings.lookupEmojiVariant(item.emoji);
 	}

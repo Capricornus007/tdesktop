@@ -90,6 +90,17 @@ void UserPhotos::List::removeAfter(PhotoId photoId) {
 	sendUpdate();
 }
 
+void UserPhotos::List::replace(PhotoId oldPhotoId, PhotoId newPhotoId) {
+	auto position = ranges::find(_photoIds, oldPhotoId);
+	if (position != _photoIds.end()) {
+		*position = newPhotoId;
+	}
+	if (_backPhotoId == oldPhotoId) {
+		_backPhotoId = newPhotoId;
+	}
+	sendUpdate();
+}
+
 void UserPhotos::List::sendUpdate() {
 	auto update = SliceUpdate();
 	update.photoIds = &_photoIds;
@@ -107,8 +118,10 @@ rpl::producer<UserPhotosResult> UserPhotos::List::query(
 		if (position != _photoIds.end()) {
 			auto haveBefore = int(position - _photoIds.begin());
 			auto haveEqualOrAfter = int(_photoIds.end() - position);
-			auto before = qMin(haveBefore, query.limitBefore);
-			auto equalOrAfter = qMin(haveEqualOrAfter, query.limitAfter + 1);
+			auto before = std::min(haveBefore, query.limitBefore);
+			auto equalOrAfter = std::min(
+				haveEqualOrAfter,
+				query.limitAfter + 1);
 			result.photoIds = std::deque<PhotoId>(
 				position - before,
 				position + equalOrAfter);
@@ -147,7 +160,7 @@ std::map<UserId, UserPhotos::List>::iterator UserPhotos::enforceLists(
 	}
 	result = _lists.emplace(user, List {}).first;
 	result->second.sliceUpdated(
-	) | rpl::start_with_next([this, user](
+	) | rpl::on_next([this, user](
 			const SliceUpdate &update) {
 		_sliceUpdated.fire(UserPhotosSliceUpdate(
 			user,
@@ -185,6 +198,13 @@ void UserPhotos::remove(UserPhotosRemoveAfter &&query) {
 	auto userIt = _lists.find(query.userId);
 	if (userIt != _lists.end()) {
 		userIt->second.removeAfter(query.photoId);
+	}
+}
+
+void UserPhotos::replace(UserPhotosReplace &&query) {
+	auto userIt = _lists.find(query.userId);
+	if (userIt != _lists.end()) {
+		userIt->second.replace(query.oldPhotoId, query.newPhotoId);
 	}
 }
 

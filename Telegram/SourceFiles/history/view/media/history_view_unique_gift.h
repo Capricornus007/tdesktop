@@ -8,12 +8,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "history/view/media/history_view_media_generic.h"
+#include "info/peer_gifts/info_peer_gifts_common.h"
 
 class Painter;
 
 namespace Data {
 class MediaGiftBox;
 struct UniqueGift;
+struct UniqueGiftBackdrop;
+struct StarGift;
+class Birthday;
 } // namespace Data
 
 namespace Ui {
@@ -26,17 +30,33 @@ class Element;
 class MediaGeneric;
 class MediaGenericPart;
 
+struct UniqueGiftMediaDescriptor {
+	std::shared_ptr<Data::UniqueGift> gift;
+	TextWithEntities message;
+	QString messagePlaceholder;
+	PeerData *messageAuthor = nullptr;
+	bool upgrade = false;
+	bool skipViewAction = false;
+};
+
 [[nodiscard]] auto GenerateUniqueGiftMedia(
 	not_null<Element*> parent,
 	Element *replacing,
-	std::shared_ptr<Data::UniqueGift> gift)
+	UniqueGiftMediaDescriptor descriptor)
 -> Fn<void(
 	not_null<MediaGeneric*>,
 	Fn<void(std::unique_ptr<MediaGenericPart>)>)>;
 
+struct UniqueGiftBgCache {
+	base::flat_map<float64, QImage> patternCache;
+	QImage badgeCache;
+	Info::PeerGifts::GiftBadge badgeKey;
+};
+
 [[nodiscard]] auto UniqueGiftBg(
 	not_null<Element*> view,
-	std::shared_ptr<Data::UniqueGift> gift)
+	std::shared_ptr<Data::UniqueGift> gift,
+	std::shared_ptr<UniqueGiftBgCache> cache = nullptr)
 -> Fn<void(
 	Painter&,
 	const Ui::ChatPaintContext&,
@@ -50,13 +70,32 @@ class MediaGenericPart;
 	not_null<MediaGeneric*>,
 	Fn<void(std::unique_ptr<MediaGenericPart>)>)>;
 
+[[nodiscard]] auto GenerateAuctionPreview(
+	not_null<Element*> parent,
+	Element *replacing,
+	std::shared_ptr<Data::StarGift> gift,
+	Data::UniqueGiftBackdrop backdrop)
+-> Fn<void(
+	not_null<MediaGeneric*>,
+	Fn<void(std::unique_ptr<MediaGenericPart>)>)>;
+
+[[nodiscard]] auto AuctionBg(
+	not_null<Element*> view,
+	Data::UniqueGiftBackdrop backdrop,
+	std::shared_ptr<Data::StarGift> gift,
+	TimeId startDate,
+	TimeId endDate)
+-> Fn<void(
+	Painter&,
+	const Ui::ChatPaintContext&,
+	not_null<const MediaGeneric*>)>;
+
 [[nodiscard]] std::unique_ptr<MediaGenericPart> MakeGenericButtonPart(
 	const QString &text,
 	QMargins margins,
 	Fn<void()> repaint,
 	ClickHandlerPtr link,
 	QColor bg = QColor(0, 0, 0, 0));
-
 
 class TextPartColored : public MediaGenericTextPart {
 public:

@@ -10,12 +10,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "scheme.h"
 #include "base/optional.h"
 #include "base/variant.h"
+#include "core/credits_amount.h"
+#include "data/data_birthday.h"
 #include "data/data_peer_id.h"
 
+#include <QtCore/QByteArray>
 #include <QtCore/QSize>
 #include <QtCore/QString>
-#include <QtCore/QByteArray>
 
+#include <map>
 #include <vector>
 
 namespace Export {
@@ -44,11 +47,369 @@ inline auto NumberToString(Type value, int length = 0, char filler = '0')
 		filler).replace(',', '.');
 }
 
+using Birthday = ::Data::Birthday;
+
+struct TextPart {
+	enum class Type {
+		Text,
+		Unknown,
+		Mention,
+		Hashtag,
+		BotCommand,
+		Url,
+		Email,
+		Bold,
+		Italic,
+		Code,
+		Pre,
+		TextUrl,
+		MentionName,
+		Phone,
+		Cashtag,
+		Underline,
+		Strike,
+		Blockquote,
+		BankCard,
+		Spoiler,
+		CustomEmoji,
+	};
+	Type type = Type::Text;
+	Utf8String text;
+	Utf8String additional;
+
+	[[nodiscard]] static Utf8String UnavailableEmoji() {
+		return "(unavailable)";
+	}
+};
+
+enum class InlineButtonPeerType : uint8 {
+	SameBotPM,
+	PM,
+	Chat,
+	Megagroup,
+	Broadcast,
+	BotPM,
+};
+
+struct InlineButtonAction {
+	enum class Type : uint8 {
+		Url,
+		Auth,
+		WebView,
+		Callback,
+		CallbackWithPassword,
+		Game,
+		Buy,
+		SwitchInline,
+		SwitchInlineSame,
+		UserProfile,
+		CopyText,
+		Disabled,
+	};
+
+	[[nodiscard]] static Utf8String TypeToString(
+		const InlineButtonAction &action);
+
+	Utf8String url;
+	std::optional<Utf8String> forwardText;
+	QByteArray callbackData;
+	Utf8String query;
+	std::optional<std::vector<InlineButtonPeerType>> peerTypes;
+	Utf8String copyText;
+	uint64 userId = 0;
+	int32 buttonId = 0;
+	Type type = Type::Url;
+	bool requiresPassword : 1 = false;
+	bool samePeer : 1 = false;
+};
+
+enum class RichButtonStyle : uint8 {
+	Default,
+	Primary,
+	Success,
+	Danger,
+	Link,
+};
+
+enum class RichButtonAlignment : uint8 {
+	Stretch,
+	Left,
+	Center,
+	Right,
+};
+
+[[nodiscard]] Utf8String InlineButtonPeerTypeToString(
+	InlineButtonPeerType type);
+[[nodiscard]] Utf8String RichButtonStyleToString(RichButtonStyle style);
+[[nodiscard]] Utf8String RichButtonAlignmentToString(
+	RichButtonAlignment alignment);
+
+struct RichButtonPayload {
+	InlineButtonAction action;
+	std::optional<RichButtonStyle> style;
+};
+
+struct RichText {
+	enum class Type : uint8 {
+		Empty,
+		Plain,
+		Concat,
+		Bold,
+		Italic,
+		Underline,
+		Strike,
+		Fixed,
+		Url,
+		Email,
+		Phone,
+		Subscript,
+		Superscript,
+		Marked,
+		Anchor,
+		Math,
+		CustomEmoji,
+		Spoiler,
+		Mention,
+		Hashtag,
+		BotCommand,
+		Cashtag,
+		AutoUrl,
+		AutoEmail,
+		AutoPhone,
+		BankCard,
+		MentionName,
+		FormattedDate,
+		InlineImage,
+		Diff,
+		Button,
+	};
+
+	Utf8String text;
+	Utf8String data;
+	Utf8String customEmojiData;
+	std::vector<RichText> children;
+	std::vector<RichText> oldChildren;
+	std::unique_ptr<RichButtonPayload> button;
+	uint64 id = 0;
+	TimeId date = 0;
+	int width = 0;
+	int height = 0;
+	Type type = Type::Empty;
+	bool relative : 1 = false;
+	bool shortTime : 1 = false;
+	bool longTime : 1 = false;
+	bool shortDate : 1 = false;
+	bool longDate : 1 = false;
+	bool dayOfWeek : 1 = false;
+	bool unsupported : 1 = false;
+};
+
+struct RichCaption {
+	RichText text;
+	RichText credit;
+};
+
+struct RichBlock;
+
+enum class RichTaskState : uint8 {
+	None,
+	Unchecked,
+	Checked,
+};
+
+enum class RichListKind : uint8 {
+	Bullet,
+	Ordered,
+};
+
+enum class RichListItemContent : uint8 {
+	Text,
+	Blocks,
+};
+
+enum class RichQuoteContent : uint8 {
+	Text,
+	Blocks,
+};
+
+struct RichOrderedList {
+	std::optional<Utf8String> type;
+	std::optional<int> start;
+	bool reversed : 1 = false;
+};
+
+struct RichListItem {
+	std::optional<RichText> text;
+	std::vector<RichBlock> blocks;
+	std::optional<Utf8String> num;
+	std::optional<Utf8String> type;
+	std::optional<int> value;
+	RichTaskState taskState = RichTaskState::None;
+	RichListItemContent content = RichListItemContent::Text;
+};
+
+enum class RichTableAlignment : uint8 {
+	Left,
+	Center,
+	Right,
+};
+
+enum class RichTableVerticalAlignment : uint8 {
+	Top,
+	Middle,
+	Bottom,
+};
+
+struct RichTableCell {
+	std::optional<RichText> text;
+	std::optional<int> colspan;
+	std::optional<int> rowspan;
+	RichTableAlignment alignment = RichTableAlignment::Left;
+	RichTableVerticalAlignment verticalAlignment
+		= RichTableVerticalAlignment::Top;
+	bool header : 1 = false;
+};
+
+struct RichTableRow {
+	std::vector<RichTableCell> cells;
+};
+
+struct RichRelatedArticle {
+	Utf8String url;
+	std::optional<Utf8String> title;
+	std::optional<Utf8String> description;
+	std::optional<Utf8String> author;
+	std::optional<uint64> photoId;
+	std::optional<TimeId> publishedDate;
+	uint64 webpageId = 0;
+};
+
+struct RichChannel {
+	enum class Source : uint8 {
+		ChatEmpty,
+		Chat,
+		ChatForbidden,
+		Channel,
+		ChannelForbidden,
+		Community,
+		CommunityForbidden,
+	};
+
+	std::optional<Utf8String> title;
+	std::optional<Utf8String> username;
+	std::optional<int64> accessHash;
+	uint64 id = 0;
+	Source source = Source::ChatEmpty;
+	bool broadcast : 1 = false;
+	bool megagroup : 1 = false;
+	bool monoforum : 1 = false;
+};
+
+struct RichMapPoint {
+	enum class Source : uint8 {
+		GeoPointEmpty,
+		GeoPoint,
+		InputGeoPointEmpty,
+		InputGeoPoint,
+	};
+
+	std::optional<int64> accessHash;
+	std::optional<int> accuracyRadius;
+	float64 latitude = 0.;
+	float64 longitude = 0.;
+	Source source = Source::GeoPointEmpty;
+};
+
+struct RichBlock {
+	enum class Kind : uint8 {
+		Unsupported,
+		Heading,
+		Paragraph,
+		Footer,
+		Thinking,
+		AuthorDate,
+		Code,
+		Divider,
+		Anchor,
+		List,
+		Quote,
+		Photo,
+		Video,
+		Cover,
+		Embed,
+		EmbedPost,
+		Collage,
+		Slideshow,
+		Channel,
+		Audio,
+		File,
+		Math,
+		Table,
+		Details,
+		RelatedArticles,
+		Map,
+		InputMap,
+		ButtonRow,
+		Unknown,
+	};
+
+	RichText text;
+	RichText quoteCaption;
+	RichCaption caption;
+	RichOrderedList orderedList;
+	RichChannel channel;
+	RichMapPoint mapPoint;
+	Utf8String language;
+	Utf8String formula;
+	Utf8String name;
+	Utf8String url;
+	Utf8String author;
+	std::optional<Utf8String> optionalUrl;
+	std::optional<Utf8String> html;
+	std::vector<RichBlock> blocks;
+	std::vector<RichListItem> listItems;
+	std::vector<RichTableRow> tableRows;
+	std::vector<RichRelatedArticle> relatedArticles;
+	std::vector<RichText> buttons;
+	std::optional<uint64> optionalWebpageId;
+	std::optional<uint64> posterPhotoId;
+	std::optional<int> width;
+	std::optional<int> height;
+	uint64 photoId = 0;
+	uint64 documentId = 0;
+	uint64 webpageId = 0;
+	uint64 authorPhotoId = 0;
+	TimeId date = 0;
+	int headingLevel = 0;
+	int zoom = 0;
+	int mapWidth = 0;
+	int mapHeight = 0;
+	Kind kind = Kind::Unknown;
+	RichListKind listKind = RichListKind::Bullet;
+	RichQuoteContent quoteContent = RichQuoteContent::Text;
+	RichButtonAlignment buttonAlignment = RichButtonAlignment::Stretch;
+	bool unsupported : 1 = false;
+	bool fullWidth : 1 = false;
+	bool allowScrolling : 1 = false;
+	bool autoplay : 1 = false;
+	bool loop : 1 = false;
+	bool spoiler : 1 = false;
+	bool open : 1 = false;
+	bool bordered : 1 = false;
+	bool striped : 1 = false;
+	bool compact : 1 = false;
+	bool pullquote : 1 = false;
+};
+
 struct UserpicsInfo {
 	int count = 0;
 };
 
 struct StoriesInfo {
+	int count = 0;
+};
+
+struct ProfileMusicInfo {
 	int count = 0;
 };
 
@@ -137,6 +498,7 @@ struct Document {
 	int height = 0;
 
 	Utf8String stickerEmoji;
+	uint64 stickerSetId;
 	Utf8String songPerformer;
 	Utf8String songTitle;
 	int duration = 0;
@@ -148,6 +510,14 @@ struct Document {
 	bool isVideoFile = false;
 	bool isAudioFile = false;
 	bool spoilered = false;
+};
+
+struct RichMessage {
+	std::vector<RichBlock> blocks;
+	std::map<uint64, Photo> photos;
+	std::map<uint64, Document> documents;
+	bool rtl : 1 = false;
+	bool part : 1 = false;
 };
 
 struct SharedContact {
@@ -198,17 +568,29 @@ struct PaidMedia {
 
 struct Poll {
 	struct Answer {
-		Utf8String text;
+		std::vector<TextPart> text;
 		QByteArray option;
 		int votes = 0;
 		bool my = false;
 	};
 
 	uint64 id = 0;
-	Utf8String question;
+	std::vector<TextPart> question;
 	std::vector<Answer> answers;
 	int totalVotes = 0;
 	bool closed = false;
+};
+
+struct TodoListItem {
+	std::vector<TextPart> text;
+	int id = 0;
+};
+
+struct TodoList {
+	bool othersCanAppend = false;
+	bool othersCanComplete = false;
+	std::vector<TextPart> title;
+	std::vector<TodoListItem> items;
 };
 
 struct GiveawayStart {
@@ -273,14 +655,19 @@ struct Chat {
 	Utf8String title;
 	Utf8String username;
 	uint8 colorIndex = 0;
+	bool isMonoforum = false;
 	bool isBroadcast = false;
 	bool isSupergroup = false;
+	bool isMonoforumAdmin = false;
+	bool hasMonoforumAdminRights = false;
+	bool isMonoforumOfPublicBroadcast = false;
+	BareId monoforumLinkId = 0;
 
 	MTPInputPeer input = MTP_inputPeerEmpty();
+	MTPInputPeer monoforumBroadcastInput = MTP_inputPeerEmpty();
 };
 
 Chat ParseChat(const MTPChat &data);
-std::map<PeerId, Chat> ParseChatsList(const MTPVector<MTPChat> &data);
 
 struct Peer {
 	PeerId id() const;
@@ -370,6 +757,7 @@ struct Media {
 		Game,
 		Invoice,
 		Poll,
+		TodoList,
 		GiveawayStart,
 		GiveawayResults,
 		PaidMedia,
@@ -398,44 +786,17 @@ Document ParseDocument(
 	const QString &suggestedFolder,
 	TimeId date);
 
+RichMessage ParseRichMessage(
+	ParseMediaContext &context,
+	const MTPRichMessage &data,
+	const QString &folder,
+	TimeId date);
+
 Media ParseMedia(
 	ParseMediaContext &context,
 	const MTPMessageMedia &data,
 	const QString &folder,
 	TimeId date);
-
-struct TextPart {
-	enum class Type {
-		Text,
-		Unknown,
-		Mention,
-		Hashtag,
-		BotCommand,
-		Url,
-		Email,
-		Bold,
-		Italic,
-		Code,
-		Pre,
-		TextUrl,
-		MentionName,
-		Phone,
-		Cashtag,
-		Underline,
-		Strike,
-		Blockquote,
-		BankCard,
-		Spoiler,
-		CustomEmoji,
-	};
-	Type type = Type::Text;
-	Utf8String text;
-	Utf8String additional;
-
-	[[nodiscard]] static Utf8String UnavailableEmoji() {
-		return "(unavailable)";
-	}
-};
 
 struct ActionChatCreate {
 	Utf8String title;
@@ -584,13 +945,17 @@ struct ActionSetChatTheme {
 struct ActionChatJoinedByRequest {
 };
 
+struct ActionChatJoinedViaCommunity {
+	ChannelId communityId = 0;
+};
+
 struct ActionWebViewDataSent {
 	Utf8String text;
 };
 
 struct ActionGiftPremium {
 	Utf8String cost;
-	int months = 0;
+	int days = 0;
 };
 
 struct ActionTopicCreate {
@@ -615,7 +980,7 @@ struct ActionSetChatWallPaper {
 struct ActionGiftCode {
 	QByteArray code;
 	PeerId boostPeerId = 0;
-	int months = 0;
+	int days = 0;
 	bool viaGiveaway = false;
 	bool unclaimed = false;
 };
@@ -645,9 +1010,9 @@ struct ActionPaymentRefunded {
 	Utf8String transactionId;
 };
 
-struct ActionGiftStars {
+struct ActionGiftCredits {
 	Utf8String cost;
-	int credits = 0;
+	CreditsAmount amount;
 };
 
 struct ActionPrizeStars {
@@ -664,6 +1029,13 @@ struct ActionStarGift {
 	std::vector<TextPart> text;
 	bool anonymous = false;
 	bool limited = false;
+
+	CreditsAmount offerPrice;
+	TimeId offerExpireAt = 0;
+	bool offer = false;
+	bool offerAccepted = false;
+	bool offerDeclined = false;
+	bool offerExpired = false;
 };
 
 struct ActionPaidMessagesRefunded {
@@ -673,6 +1045,65 @@ struct ActionPaidMessagesRefunded {
 
 struct ActionPaidMessagesPrice {
 	int stars = 0;
+	bool broadcastAllowed = false;
+};
+
+struct ActionTodoCompletions {
+	std::vector<int> completed;
+	std::vector<int> incompleted;
+};
+
+struct ActionTodoAppendTasks {
+	std::vector<TodoListItem> items;
+};
+
+struct ActionPollAppendAnswer {
+	Utf8String option;
+};
+
+struct ActionPollDeleteAnswer {
+	Utf8String option;
+};
+
+struct ActionSuggestedPostApproval {
+	Utf8String rejectComment;
+	TimeId scheduleDate = 0;
+	CreditsAmount price;
+	bool rejected = false;
+	bool balanceTooLow = false;
+};
+
+struct ActionSuggestedPostSuccess {
+	CreditsAmount price;
+};
+
+struct ActionSuggestedPostRefund {
+	bool payerInitiated = false;
+};
+
+struct ActionSuggestBirthday {
+	Birthday birthday;
+};
+
+struct ActionNoForwardsToggle {
+	bool newValue = false;
+};
+
+struct ActionNoForwardsRequest {
+	bool expired = false;
+	bool newValue = false;
+};
+
+struct ActionNewCreatorPending {
+	UserId newCreatorId = 0;
+};
+
+struct ActionChangeCreator {
+	UserId newCreatorId = 0;
+};
+
+struct ActionManagedBotCreated {
+	UserId botId = 0;
 };
 
 struct ServiceAction {
@@ -706,6 +1137,7 @@ struct ServiceAction {
 		ActionGroupCallScheduled,
 		ActionSetChatTheme,
 		ActionChatJoinedByRequest,
+		ActionChatJoinedViaCommunity,
 		ActionWebViewDataSent,
 		ActionGiftPremium,
 		ActionTopicCreate,
@@ -718,11 +1150,24 @@ struct ServiceAction {
 		ActionGiveawayResults,
 		ActionBoostApply,
 		ActionPaymentRefunded,
-		ActionGiftStars,
+		ActionGiftCredits,
 		ActionPrizeStars,
 		ActionStarGift,
 		ActionPaidMessagesRefunded,
-		ActionPaidMessagesPrice> content;
+		ActionPaidMessagesPrice,
+		ActionTodoCompletions,
+		ActionTodoAppendTasks,
+		ActionPollAppendAnswer,
+		ActionPollDeleteAnswer,
+		ActionSuggestedPostApproval,
+		ActionSuggestedPostSuccess,
+		ActionSuggestedPostRefund,
+		ActionSuggestBirthday,
+		ActionNoForwardsToggle,
+		ActionNoForwardsRequest,
+		ActionNewCreatorPending,
+		ActionChangeCreator,
+		ActionManagedBotCreated> content;
 };
 
 ServiceAction ParseServiceAction(
@@ -798,6 +1243,7 @@ struct HistoryMessageMarkupButton {
 		WebView,
 		SimpleWebView,
 		CopyText,
+		Disabled,
 	};
 
 	static QByteArray TypeToString(const HistoryMessageMarkupButton &);
@@ -833,6 +1279,7 @@ struct Message {
 	ServiceAction action;
 	bool out = false;
 	std::vector<std::vector<HistoryMessageMarkupButton>> inlineButtonRows;
+	std::optional<RichMessage> richMessage;
 
 	File &file();
 	const File &file() const;
@@ -846,6 +1293,7 @@ struct FileOrigin {
 	int32 messageId = 0;
 	int32 storyId = 0;
 	uint64 customEmojiId = 0;
+	bool richMessage : 1 = false;
 };
 
 struct Story {
@@ -871,6 +1319,11 @@ struct StoriesSlice {
 StoriesSlice ParseStoriesSlice(
 	const MTPVector<MTPStoryItem> &data,
 	int baseIndex);
+
+struct ProfileMusicSlice {
+	std::vector<Message> list;
+	int skipped = 0;
+};
 
 Message ParseMessage(
 	ParseMediaContext &context,
@@ -908,12 +1361,15 @@ struct DialogInfo {
 	MTPInputPeer migratedFromInput = MTP_inputPeerEmpty();
 	ChannelId migratedToChannelId = 0;
 
+	MTPInputPeer monoforumBroadcastInput = MTP_inputPeerEmpty();
+
 	// User messages splits which contained that dialog.
 	std::vector<int> splits;
 
 	// Filled after the whole dialogs list is accumulated.
 	bool onlyMyMessages = false;
 	bool isLeftChannel = false;
+	bool isMonoforum = false;
 	QString relativePath;
 
 	// Filled when requesting dialog messages.

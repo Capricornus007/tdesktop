@@ -12,8 +12,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/animations.h"
 #include "base/timer.h"
 #include "base/object_ptr.h"
+#include "base/weak_qptr.h"
 #include "data/data_report.h"
 #include "dialogs/dialogs_key.h"
+
+namespace style {
+struct UserpicButton;
+} // namespace style
 
 namespace Main {
 class Session;
@@ -35,6 +40,10 @@ class FadeWrapScaled;
 namespace Window {
 class SessionController;
 } // namespace Window
+
+namespace Calls {
+struct StartOutgoingCallArgs;
+} // namespace Calls
 
 namespace HistoryView {
 
@@ -74,6 +83,8 @@ public:
 		ActiveChat activeChat,
 		SendActionPainter *sendAction);
 	void setCustomTitle(const QString &title);
+	void setTitleShownRatio(float64 shown);
+	[[nodiscard]] int titleLeft() const;
 
 	void showChooseMessagesForReport(Data::ReportInput reportInput);
 	
@@ -87,6 +98,7 @@ public:
 	void searchEnableChooseFromUser(bool enable, bool visible);
 	bool searchSetFocus();
 	[[nodiscard]] bool searchMode() const;
+	[[nodiscard]] rpl::producer<bool> searchModeChanges() const;
 	[[nodiscard]] bool searchHasFocus() const;
 	[[nodiscard]] rpl::producer<> searchCancelled() const;
 	[[nodiscard]] rpl::producer<> searchSubmitted() const;
@@ -143,20 +155,32 @@ private:
 	struct EmojiInteractionSeenAnimation;
 
 	[[nodiscard]] bool rootChatsListBar() const;
+	[[nodiscard]] bool communityChatsListBar() const;
+	[[nodiscard]] bool communityUserpicShown() const;
+	[[nodiscard]] const style::UserpicButton &infoButtonStyle() const;
 	void refreshInfoButton();
+	void updateInfoButtonVisibility();
 	void refreshLang();
 	void updateSearchVisibility();
+	void updateSearchJumpToDateVisibility();
+	[[nodiscard]] bool searchJumpToDateFits() const;
+	void updateChooseFromUserGeometry();
 	void updateControlsGeometry();
 	void slideAnimationCallback();
 	void updateInfoToggleActive();
 	void setupDragOnBackButton();
 
-	void call();
+	void call(Calls::StartOutgoingCallArgs);
 	void groupCall();
 	void showGroupCallMenu(not_null<PeerData*> peer);
+	void showCallMenu();
 	void toggleInfoSection();
 
-	[[nodiscard]] bool createMenu(not_null<Ui::IconButton*> button);
+	[[nodiscard]] bool createMenu(
+		not_null<Ui::IconButton*> button,
+		bool withIcons = true);
+	void closeMenu();
+	void unrippleMenuButton();
 
 	void handleEmojiInteractionSeen(const QString &emoticon);
 	bool paintSendAction(
@@ -174,6 +198,7 @@ private:
 	void connectingAnimationCallback();
 
 	void paintTopBar(Painter &p);
+	[[nodiscard]] PeerData *titleNamePeer() const;
 	void paintStatus(
 		Painter &p,
 		int left,
@@ -230,6 +255,7 @@ private:
 	rpl::event_stream<> _searchSubmitted;
 	rpl::event_stream<> _jumpToDateRequests;
 	rpl::event_stream<> _chooseFromUserRequests;
+	rpl::event_stream<bool> _searchModeChanges;
 
 	object_ptr<Ui::IconButton> _back;
 	object_ptr<Ui::IconButton> _cancelChoose;
@@ -244,8 +270,9 @@ private:
 	object_ptr<Ui::IconButton> _infoToggle;
 	object_ptr<Ui::IconButton> _menuToggle;
 	base::unique_qptr<Ui::PopupMenu> _menu;
+	base::weak_qptr<Ui::IconButton> _menuButton;
 
-	object_ptr<TWidget> _membersShowArea = { nullptr };
+	object_ptr<RpWidget> _membersShowArea = { nullptr };
 	rpl::event_stream<bool> _membersShowAreaActive;
 
 	float64 _narrowRatio = 0.;
@@ -255,6 +282,7 @@ private:
 	bool _titlePeerTextOnline = false;
 	int _leftTaken = 0;
 	int _rightTaken = 0;
+	float64 _titleShownRatio = 1.;
 	bool _animatingMode = false;
 	std::unique_ptr<Ui::InfiniteRadialAnimation> _connecting;
 
